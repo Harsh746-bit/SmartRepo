@@ -44,6 +44,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def clean_path_middleware(request: Request, call_next):
+    # Normalize duplicate consecutive slashes in request paths (e.g. //auth/login -> /auth/login)
+    path = request.scope.get("path", "")
+    if "//" in path:
+        request.scope["path"] = re.sub(r"/+", "/", path)
+    return await call_next(request)
+
 # Upload directory on local filesystem or mounted persistent volume
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", Path(__file__).resolve().parent / "uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
