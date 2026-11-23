@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: campusconnect-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URI=mongodb+srv://Part2006:Parth492006@cluster0.g3r2cw6.mongodb.net/?retryWrites=true&w=majority
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - backend-uploads:/app/uploads
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE=http://localhost:8000
+    container_name: campusconnect-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend-uploads:
