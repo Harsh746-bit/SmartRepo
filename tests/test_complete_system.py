@@ -382,6 +382,76 @@ async def run_full_suite():
     assert doc_alice_id in admin_doc_ids and doc_bob_id in admin_doc_ids
     print("  ✓ Admin has unrestricted system-wide access to all documents")
 
+    # =================================================================
+    # Scenario 6: Faculty Upload Visibility for Enrolled Students
+    # =================================================================
+    print("\n[Scenario 6] Faculty Document Sharing with Enrolled Students:")
+    # 6.1 Teacher Turing uploads a course document to CS-301
+    faculty_file_content = b"%PDF-1.4\nFaculty Lecture Note: Process Synchronization and Deadlocks in Operating Systems."
+    faculty_upload = await main.upload_document(
+        file=UploadFile(filename="CS301_Lecture_Deadlocks.pdf", file=io.BytesIO(faculty_file_content)),
+        uploaded_by_email=t1_email,
+        uploaded_by_name="Prof. Alan Turing",
+        uploaded_by_role="Teacher",
+        subject_id=os_sub_id
+    )
+    doc_faculty_id = faculty_upload["document_id"]
+    print(f"  ✓ Faculty course document uploaded by Prof. Turing (doc_id: {doc_faculty_id})")
+
+    # 6.2 Enrolled Student Alice queries documents -> CAN view the faculty document
+    alice_enrolled_docs = main.get_documents(user_email=s1_email, user_role="Student")
+    alice_enrolled_ids = [d["id"] for d in alice_enrolled_docs]
+    assert doc_faculty_id in alice_enrolled_ids, "Enrolled Student Alice must see faculty uploads in CS-301"
+    print("  ✓ Enrolled student Alice sees Prof. Turing's faculty document in document listing")
+
+    # 6.3 Enrolled Student Alice previews, inspects info, and downloads faculty document -> All Allowed!
+    p_res = main.preview_document(document_id=doc_faculty_id, user_email=s1_email, user_role="Student")
+    assert p_res is not None
+    info_res = main.get_document_info(document_id=doc_faculty_id, user_email=s1_email, user_role="Student")
+    assert info_res["id"] == doc_faculty_id
+    dl_res = main.download_document(document_id=doc_faculty_id, user_email=s1_email, user_role="Student")
+    assert dl_res is not None
+    print("  ✓ Enrolled student Alice successfully previews, inspects, and downloads faculty document")
+
+    # 6.4 Enrolled Student Alice CANNOT delete faculty document
+    alice_delete_blocked = False
+    try:
+        main.move_document_to_recycle_bin(document_id=doc_faculty_id, user_email=s1_email, user_role="Student")
+    except HTTPException as e:
+        if e.status_code == 403:
+            alice_delete_blocked = True
+    assert alice_delete_blocked, "Student Alice must never be allowed to delete a faculty document"
+    print("  ✓ Student Alice blocked from deleting faculty document (HTTP 403)")
+
+    # 6.5 Enrolled Student Alice searches for "Deadlocks" -> Faculty document is returned
+    alice_search = main.search_documents(q="Deadlocks", user_email=s1_email, user_role="Student")
+    assert any(d["id"] == doc_faculty_id for d in alice_search), "Search must include faculty documents for enrolled students"
+    print("  ✓ Enrolled student search finds faculty document by keyword/content")
+
+    # 6.6 Unenrolled Student Charlie tries to preview faculty document -> BLOCKED with 403
+    s3_email = "e2e_student_charlie@smartrepo.edu"
+    all_test_emails.append(s3_email)
+    main.register_user({
+        "full_name": "Charlie Chaplin",
+        "email": s3_email,
+        "password": "Password123!",
+        "role": "Student"
+    })
+    charlie_docs = main.get_documents(user_email=s3_email, user_role="Student")
+    assert doc_faculty_id not in [d["id"] for d in charlie_docs], "Unenrolled student must NOT see faculty document"
+    charlie_preview_blocked = False
+    try:
+        main.preview_document(document_id=doc_faculty_id, user_email=s3_email, user_role="Student")
+    except HTTPException as e:
+        if e.status_code == 403:
+            charlie_preview_blocked = True
+    assert charlie_preview_blocked, "Unenrolled student preview must return 403"
+    print("  ✓ Unenrolled student Charlie blocked from viewing/previewing faculty document (HTTP 403)")
+
+    # 6.7 Student Alice still cannot see Student Bob's files, and vice-versa (peer student isolation preserved)
+    assert doc_bob_id not in alice_enrolled_ids
+    print("  ✓ Student-to-student peer isolation remains strictly enforced")
+
     # Clean up test accounts and files
     db.users.delete_many({"email": {"$in": all_test_emails}})
     db.teacher_requests.delete_many({"email": {"$in": all_test_emails}})

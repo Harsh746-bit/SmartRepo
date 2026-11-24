@@ -474,7 +474,7 @@ def get_user_favorite_set(db, user_email: Optional[str]) -> set:
 def check_document_access(doc: dict, user_email: Optional[str], user_role: Optional[str], db) -> bool:
     """
     Enforces strict Role-Based Access Control and IDOR protection:
-    - Student: Can access ONLY their own uploaded documents.
+    - Student: Can access their own uploaded documents OR documents uploaded by Faculty/Teacher in subjects they are enrolled in.
     - Teacher: Can access their own uploaded documents OR documents submitted within subjects they own.
     - Admin: Full system-wide access.
     """
@@ -490,7 +490,31 @@ def check_document_access(doc: dict, user_email: Optional[str], user_role: Optio
     is_owner = bool(clean_email and doc_uploader == clean_email)
 
     if clean_role == "Student":
-        return is_owner
+        if is_owner:
+            return True
+        # Enrolled students can view materials uploaded by Faculty / Teacher in the subject
+        uploader_role = (doc.get("uploaded_by_role") or "").strip().capitalize()
+        sub_id = doc.get("subject_id")
+        if uploader_role in ["Teacher", "Faculty"] and sub_id:
+            sub_id_str = str(sub_id)
+            enrolled = db.enrollments.find_one({
+                "student_email": clean_email,
+                "subject_id": sub_id_str
+            })
+            if enrolled:
+                return True
+            try:
+                sub = db.subjects.find_one({"_id": ObjectId(sub_id_str)})
+                if sub:
+                    enrolled = db.enrollments.find_one({
+                        "student_email": clean_email,
+                        "subject_id": str(sub["_id"])
+                    })
+                    if enrolled:
+                        return True
+            except Exception:
+                pass
+        return False
 
     if clean_role == "Teacher":
         if is_owner:
@@ -1040,9 +1064,31 @@ def get_documents(
         elif approval_status and approval_status != "All":
             query["approval_status"] = approval_status
     elif clean_role == "Student":
-        # STRICT REQUIREMENT: Students can view only the documents they have personally uploaded!
-        # Never access documents uploaded by other students!
-        query["uploaded_by_email"] = clean_email
+        # If scope is explicitly "my", student only sees their own personal submissions
+        if scope == "my":
+            query["uploaded_by_email"] = clean_email
+        else:
+            # Enrolled subjects: student views their own uploads PLUS course materials uploaded by Faculty/Teacher
+            enrollments = list(db.enrollments.find({"student_email": clean_email}))
+            enrolled_sub_ids = [str(e.get("subject_id")) for e in enrollments if e.get("subject_id")]
+
+            if subject_id and subject_id != "All":
+                query["subject_id"] = subject_id
+                if subject_id in enrolled_sub_ids:
+                    query["$or"] = [
+                        {"uploaded_by_email": clean_email},
+                        {"uploaded_by_role": {"$in": ["Teacher", "Faculty"]}}
+                    ]
+                else:
+                    query["uploaded_by_email"] = clean_email
+            else:
+                query["$or"] = [
+                    {"uploaded_by_email": clean_email},
+                    {
+                        "subject_id": {"$in": enrolled_sub_ids},
+                        "uploaded_by_role": {"$in": ["Teacher", "Faculty"]}
+                    }
+                ]
         if approval_status and approval_status != "All":
             query["approval_status"] = approval_status
     elif clean_role == "Teacher":
@@ -1332,8 +1378,16 @@ def search_documents(
             {"uploaded_by_email": clean_email}
         ]
     elif clean_role == "Student" and clean_email:
-        # Students can search only their own documents
-        query["uploaded_by_email"] = clean_email
+        # Students can search their own documents plus materials uploaded by Faculty/Teacher in enrolled subjects
+        enrollments = list(db.enrollments.find({"student_email": clean_email}))
+        enrolled_sub_ids = [str(e.get("subject_id")) for e in enrollments if e.get("subject_id")]
+        query["$or"] = [
+            {"uploaded_by_email": clean_email},
+            {
+                "subject_id": {"$in": enrolled_sub_ids},
+                "uploaded_by_role": {"$in": ["Teacher", "Faculty"]}
+            }
+        ]
     else:
         return []
 
@@ -1420,6 +1474,10 @@ def preview_document(
     db = mongo.get_mongo_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    user_email = user_email if isinstance(user_email, str) else None
+    user_name = user_name if isinstance(user_name, str) else None
+    user_role = user_role if isinstance(user_role, str) else None
 
     try:
         obj_id = ObjectId(document_id)
@@ -1514,6 +1572,9 @@ def get_document_info(
     if db is None:
         raise HTTPException(status_code=503, detail="Database connection unavailable.")
 
+    user_email = user_email if isinstance(user_email, str) else None
+    user_role = user_role if isinstance(user_role, str) else None
+
     try:
         obj_id = ObjectId(document_id)
         doc = db.documents.find_one({"_id": obj_id})
@@ -1553,6 +1614,10 @@ def download_document(
     db = mongo.get_mongo_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    user_email = user_email if isinstance(user_email, str) else None
+    user_name = user_name if isinstance(user_name, str) else None
+    user_role = user_role if isinstance(user_role, str) else None
 
     try:
         obj_id = ObjectId(document_id)
@@ -1637,6 +1702,10 @@ def move_document_to_recycle_bin(
     if db is None:
         raise HTTPException(status_code=503, detail="Database connection unavailable.")
 
+    user_email = user_email if isinstance(user_email, str) else None
+    user_name = user_name if isinstance(user_name, str) else None
+    user_role = user_role if isinstance(user_role, str) else None
+
     try:
         obj_id = ObjectId(document_id)
         doc = db.documents.find_one({"_id": obj_id})
@@ -1651,6 +1720,8 @@ def move_document_to_recycle_bin(
     clean_role = (user_role or "").strip().capitalize()
 
     # RBAC check: Student can only delete own document. Teacher can delete own or subject submission. Admin can delete any.
+    if clean_role == "Student" and doc.get("uploaded_by_email", "").strip().lower() != clean_email:
+        raise HTTPException(status_code=403, detail="Unauthorized: Students can only delete their own uploaded documents.")
     if not check_document_access(doc, clean_email, clean_role, db):
         raise HTTPException(status_code=403, detail="Unauthorized to delete this document.")
 
@@ -1723,6 +1794,10 @@ def restore_document_from_recycle_bin(
     if db is None:
         raise HTTPException(status_code=503, detail="Database connection unavailable.")
 
+    user_email = user_email if isinstance(user_email, str) else None
+    user_name = user_name if isinstance(user_name, str) else None
+    user_role = user_role if isinstance(user_role, str) else None
+
     try:
         obj_id = ObjectId(document_id)
         doc = db.documents.find_one({"_id": obj_id})
@@ -1737,6 +1812,8 @@ def restore_document_from_recycle_bin(
     clean_role = (user_role or "").strip().capitalize()
 
     # RBAC check: Student can restore only own document. Teacher can restore own or subject submission. Admin can restore any.
+    if clean_role == "Student" and doc.get("uploaded_by_email", "").strip().lower() != clean_email:
+        raise HTTPException(status_code=403, detail="Unauthorized: Students can only restore their own uploaded documents.")
     if not check_document_access(doc, clean_email, clean_role, db):
         raise HTTPException(status_code=403, detail="Unauthorized to restore this document.")
 
@@ -1784,6 +1861,10 @@ def permanently_delete_document(
     db = mongo.get_mongo_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    user_email = user_email if isinstance(user_email, str) else None
+    user_name = user_name if isinstance(user_name, str) else None
+    user_role = user_role if isinstance(user_role, str) else None
 
     try:
         obj_id = ObjectId(document_id)
