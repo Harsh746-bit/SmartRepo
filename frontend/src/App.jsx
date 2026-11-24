@@ -57,6 +57,16 @@ export default function App() {
 
   // Global search input state
   const [globalSearch, setGlobalSearch] = useState("");
+  const [uploadInitialSubjectId, setUploadInitialSubjectId] = useState(null);
+
+  const handleNavigateWithParams = useCallback((tab, params = {}) => {
+    if (params?.subject_id) {
+      setUploadInitialSubjectId(params.subject_id);
+    } else {
+      setUploadInitialSubjectId(null);
+    }
+    setCurrentTab(tab);
+  }, []);
 
   // Responsive UI states
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -431,18 +441,6 @@ export default function App() {
     my_pending_count: myDocs.filter((d) => d.approval_status === "Pending").length,
     my_rejected_count: myDocs.filter((d) => d.approval_status === "Rejected").length,
     my_total_downloads: myDocs.reduce((acc, d) => acc + (d.download_count || 0), 0)
-  };
-
-  // Handle navigation with optional params (like subject_id)
-  const [uploadInitialSubjectId, setUploadInitialSubjectId] = useState(null);
-
-  const handleNavigateWithParams = (tab, params = {}) => {
-    if (params?.subject_id) {
-      setUploadInitialSubjectId(params.subject_id);
-    } else {
-      setUploadInitialSubjectId(null);
-    }
-    setCurrentTab(tab);
   };
 
   // Main View Router based on currentTab
