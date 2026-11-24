@@ -29,33 +29,52 @@ export default function StudentDashboard({
   const studentName = user?.name || "Student";
   const studentEmail = user?.email || "";
 
-  const [enrolledSubjects, setEnrolledSubjects] = useState([]);
-  const [availableSubjects, setAvailableSubjects] = useState([]);
+  const [enrolledSubjects, setEnrolledSubjects] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem(`enrolled_${studentEmail}`);
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [availableSubjects, setAvailableSubjects] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem(`available_subjects_${studentEmail}`);
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [loadingEnrollments, setLoadingEnrollments] = useState(false);
   const [enrollActionId, setEnrollActionId] = useState(null);
   const [enrollMessage, setEnrollMessage] = useState(null);
 
   const fetchStudentData = async () => {
     if (!studentEmail) return;
-    setLoadingEnrollments(true);
     try {
-      // 1. Fetch Enrolled Subjects
-      const enrollRes = await fetch(`${API_BASE}/students/my-enrollments?user_email=${encodeURIComponent(studentEmail)}`);
+      // 1. Fetch Enrolled Subjects & Available Subjects in parallel
+      const [enrollRes, subRes] = await Promise.all([
+        fetch(`${API_BASE}/students/my-enrollments?user_email=${encodeURIComponent(studentEmail)}`),
+        fetch(`${API_BASE}/subjects?user_email=${encodeURIComponent(studentEmail)}&user_role=Student`)
+      ]);
+
       if (enrollRes.ok) {
         const enrollData = await enrollRes.json();
-        setEnrolledSubjects(Array.isArray(enrollData) ? enrollData : []);
+        const list = Array.isArray(enrollData) ? enrollData : [];
+        setEnrolledSubjects(list);
+        sessionStorage.setItem(`enrolled_${studentEmail}`, JSON.stringify(list));
       }
 
-      // 2. Fetch Available Subjects
-      const subRes = await fetch(`${API_BASE}/subjects?user_email=${encodeURIComponent(studentEmail)}&user_role=Student`);
       if (subRes.ok) {
         const subData = await subRes.json();
-        setAvailableSubjects(Array.isArray(subData) ? subData : []);
+        const list = Array.isArray(subData) ? subData : [];
+        setAvailableSubjects(list);
+        sessionStorage.setItem(`available_subjects_${studentEmail}`, JSON.stringify(list));
       }
     } catch (err) {
       console.error("Error loading student enrollments:", err);
-    } finally {
-      setLoadingEnrollments(false);
     }
   };
 
@@ -66,6 +85,27 @@ export default function StudentDashboard({
   const handleEnroll = async (subjectId, subjectName) => {
     setEnrollActionId(subjectId);
     setEnrollMessage(null);
+
+    // Optimistically mark as enrolled immediately (0ms feedback)
+    setAvailableSubjects((prev) =>
+      prev.map((s) => (s.id === subjectId ? { ...s, is_enrolled: true } : s))
+    );
+    const targetSub = availableSubjects.find((s) => s.id === subjectId);
+    if (targetSub) {
+      setEnrolledSubjects((prev) => [
+        {
+          enrollment_id: `temp_${Date.now()}`,
+          subject_id: subjectId,
+          subject_name: targetSub.subject_name,
+          subject_code: targetSub.subject_code,
+          description: targetSub.description,
+          teacher_name: targetSub.teacher_name,
+          my_submissions_count: 0
+        },
+        ...prev
+      ]);
+    }
+
     try {
       const response = await fetch(`${API_BASE}/subjects/${subjectId}/enroll`, {
         method: "POST",
@@ -80,9 +120,10 @@ export default function StudentDashboard({
         throw new Error(data.detail || "Enrollment failed.");
       }
       setEnrollMessage({ type: "success", text: data.message || `Enrolled in ${subjectName} successfully!` });
-      await fetchStudentData();
+      fetchStudentData();
     } catch (err) {
       setEnrollMessage({ type: "error", text: err.message });
+      fetchStudentData();
     } finally {
       setEnrollActionId(null);
     }

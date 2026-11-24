@@ -44,35 +44,21 @@ except Exception as e:
 def get_mongo_db():
     global client, db
     if db is not None:
-        try:
-            # Check connection health
-            client.admin.command('ping')
-            return db
-        except Exception:
-            db = None
+        return db
 
     try:
         client = pymongo.MongoClient(
             MONGO_URI,
-            serverSelectionTimeoutMS=8000,
-            connectTimeoutMS=8000
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+            maxPoolSize=50,
+            minPoolSize=5
         )
-        client.admin.command('ping')
         db = client[DB_NAME]
-        db.users.create_index("email", unique=True)
-        db.documents.create_index("uploaded_by_email")
-        db.documents.create_index("sha256_hash")
-        db.documents.create_index("content_hash")
-        db.documents.create_index("is_deleted")
-        db.documents.create_index("approval_status")
-        db.documents.create_index("subject_id")
-        db.documents.create_index([("subject_id", 1), ("sha256_hash", 1)])
-        db.subjects.create_index("subject_code", unique=True)
-        db.subjects.create_index("teacher_email")
-        db.enrollments.create_index([("student_email", 1), ("subject_id", 1)], unique=True)
-        db.enrollments.create_index("student_email")
-        db.enrollments.create_index("subject_id")
-        db.teacher_requests.create_index("user_id")
+        return db
+    except Exception as e:
+        print("[WARN] MongoDB connection error:", e)
+        return None
         db.teacher_requests.create_index("status")
         db.favorites.create_index([("user_email", 1), ("document_id", 1)])
         db.recently_viewed.create_index([("user_email", 1), ("viewed_at", -1)])

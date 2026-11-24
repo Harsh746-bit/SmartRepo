@@ -5,7 +5,7 @@ from pathlib import Path
 from bson import ObjectId
 import io
 
-sys.path.insert(0, str(Path(__file__).parent / "backend"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 import mongo
 import main

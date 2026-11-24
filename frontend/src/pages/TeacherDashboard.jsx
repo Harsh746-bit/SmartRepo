@@ -35,7 +35,14 @@ export default function TeacherDashboard({
   const teacherName = user?.name || "Professor";
   const teacherEmail = user?.email || "";
 
-  const [subjects, setSubjects] = useState([]);
+  const [subjects, setSubjects] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem(`teacher_subjects_${teacherEmail}`);
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
   const [loadingSubjects, setLoadingSubjects] = useState(false);
   const [activeTab, setActiveTab] = useState("subjects"); // 'subjects' | 'submissions'
 
@@ -59,17 +66,16 @@ export default function TeacherDashboard({
 
   const fetchTeacherSubjects = async () => {
     if (!teacherEmail) return;
-    setLoadingSubjects(true);
     try {
       const res = await fetch(`${API_BASE}/subjects?user_email=${encodeURIComponent(teacherEmail)}&user_role=Teacher`);
       if (res.ok) {
         const data = await res.json();
-        setSubjects(Array.isArray(data) ? data : []);
+        const list = Array.isArray(data) ? data : [];
+        setSubjects(list);
+        sessionStorage.setItem(`teacher_subjects_${teacherEmail}`, JSON.stringify(list));
       }
     } catch (err) {
       console.error("Error fetching teacher subjects:", err);
-    } finally {
-      setLoadingSubjects(false);
     }
   };
 
@@ -77,9 +83,20 @@ export default function TeacherDashboard({
     fetchTeacherSubjects();
   }, [teacherEmail]);
 
-  // Toggle Duplicate Setting
+  // Toggle Duplicate Setting (Instant Optimistic Feedback)
   const handleToggleDuplicate = async (subjectId, currentSetting, subjectName) => {
     const newSetting = !currentSetting;
+
+    // Optimistically update toggle immediately (0ms latency)
+    setSubjects(prev =>
+      prev.map(s => s.id === subjectId ? { ...s, allow_duplicate_submissions: newSetting } : s)
+    );
+
+    setToastMessage({
+      type: "success",
+      text: `Duplicate file submissions for ${subjectName} are now ${newSetting ? "ALLOWED (ON)" : "RESTRICTED (OFF)"}.`
+    });
+
     try {
       const res = await fetch(`${API_BASE}/subjects/${subjectId}/duplicate-setting`, {
         method: "PUT",
@@ -95,18 +112,9 @@ export default function TeacherDashboard({
         const errData = await res.json();
         throw new Error(errData.detail || "Failed to update duplicate setting.");
       }
-
-      setToastMessage({
-        type: "success",
-        text: `Duplicate file submissions for ${subjectName} are now ${newSetting ? "ALLOWED (ON)" : "RESTRICTED (OFF)"}.`
-      });
-
-      // Update state locally
-      setSubjects(prev =>
-        prev.map(s => s.id === subjectId ? { ...s, allow_duplicate_submissions: newSetting } : s)
-      );
     } catch (err) {
       setToastMessage({ type: "error", text: err.message });
+      fetchTeacherSubjects();
     }
   };
 

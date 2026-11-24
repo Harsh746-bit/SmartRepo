@@ -29,35 +29,48 @@ export default function AdminDashboard({
   onApprove,
   onReject
 }) {
-  const [teacherRequests, setTeacherRequests] = useState([]);
-  const [loadingRequests, setLoadingRequests] = useState(false);
+  const [teacherRequests, setTeacherRequests] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem("admin_teacher_requests");
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
   const [requestActionId, setRequestActionId] = useState(null);
-  const [allSubjects, setAllSubjects] = useState([]);
-  const [loadingSubjects, setLoadingSubjects] = useState(false);
+  const [allSubjects, setAllSubjects] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem("admin_all_subjects");
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
   const [actionNotice, setActionNotice] = useState(null);
 
   const fetchAdminData = async () => {
-    setLoadingRequests(true);
-    setLoadingSubjects(true);
     try {
-      // 1. Fetch pending teacher requests
-      const reqRes = await fetch(`${API_BASE}/admin/teacher-requests`);
+      // 1. Fetch pending teacher requests & subjects in parallel
+      const [reqRes, subRes] = await Promise.all([
+        fetch(`${API_BASE}/admin/teacher-requests`),
+        fetch(`${API_BASE}/subjects?user_role=Admin`)
+      ]);
+
       if (reqRes.ok) {
         const reqData = await reqRes.json();
-        setTeacherRequests(Array.isArray(reqData) ? reqData : []);
+        const list = Array.isArray(reqData) ? reqData : [];
+        setTeacherRequests(list);
+        sessionStorage.setItem("admin_teacher_requests", JSON.stringify(list));
       }
 
-      // 2. Fetch all subjects
-      const subRes = await fetch(`${API_BASE}/subjects?user_role=Admin`);
       if (subRes.ok) {
         const subData = await subRes.json();
-        setAllSubjects(Array.isArray(subData) ? subData : []);
+        const list = Array.isArray(subData) ? subData : [];
+        setAllSubjects(list);
+        sessionStorage.setItem("admin_all_subjects", JSON.stringify(list));
       }
     } catch (err) {
       console.error("Error fetching admin dashboard data:", err);
-    } finally {
-      setLoadingRequests(false);
-      setLoadingSubjects(false);
     }
   };
 
@@ -66,8 +79,10 @@ export default function AdminDashboard({
   }, []);
 
   const handleApproveTeacher = async (teacherId, teacherName) => {
-    setRequestActionId(teacherId);
-    setActionNotice(null);
+    // Optimistically remove request from list immediately (0ms feedback)
+    setTeacherRequests((prev) => prev.filter((r) => r.id !== teacherId));
+    setActionNotice({ type: "success", text: `Teacher account for ${teacherName} approved & activated!` });
+
     try {
       const res = await fetch(`${API_BASE}/admin/teacher-requests/${teacherId}/approve`, {
         method: "PUT",
@@ -81,18 +96,17 @@ export default function AdminDashboard({
       if (!res.ok) {
         throw new Error(data.detail || "Failed to approve teacher request.");
       }
-      setActionNotice({ type: "success", text: data.message || `Teacher account for ${teacherName} approved!` });
-      await fetchAdminData();
     } catch (err) {
       setActionNotice({ type: "error", text: err.message });
-    } finally {
-      setRequestActionId(null);
+      fetchAdminData();
     }
   };
 
   const handleRejectTeacher = async (teacherId, teacherName) => {
-    setRequestActionId(teacherId);
-    setActionNotice(null);
+    // Optimistically remove request from list immediately
+    setTeacherRequests((prev) => prev.filter((r) => r.id !== teacherId));
+    setActionNotice({ type: "info", text: `Teacher account for ${teacherName} rejected.` });
+
     try {
       const res = await fetch(`${API_BASE}/admin/teacher-requests/${teacherId}/reject`, {
         method: "PUT",
@@ -106,12 +120,9 @@ export default function AdminDashboard({
       if (!res.ok) {
         throw new Error(data.detail || "Failed to reject teacher request.");
       }
-      setActionNotice({ type: "success", text: data.message || `Teacher account for ${teacherName} rejected.` });
-      await fetchAdminData();
     } catch (err) {
       setActionNotice({ type: "error", text: err.message });
-    } finally {
-      setRequestActionId(null);
+      fetchAdminData();
     }
   };
 

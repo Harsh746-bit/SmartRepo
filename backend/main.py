@@ -529,10 +529,16 @@ def serialize_subject(sub: dict, enrolled_count: int = 0, docs_count: int = 0, i
     }
 
 
+_initial_subjects_seeded = False
+
 def seed_initial_subjects(db):
-    if db is None:
+    global _initial_subjects_seeded
+    if db is None or _initial_subjects_seeded:
         return
     try:
+        if db.subjects.estimated_document_count() > 0:
+            _initial_subjects_seeded = True
+            return
         if db.subjects.count_documents({}) == 0:
             teacher = db.users.find_one({"role": "Teacher", "status": "Active"})
             t_id = str(teacher["_id"]) if teacher else "teacher_default"
@@ -697,12 +703,34 @@ def get_subjects(
         query = {}
 
     subjects_cursor = list(db.subjects.find(query).sort("created_at", -1))
-    results = []
+    if not subjects_cursor:
+        return []
 
+    sub_id_strs = [str(s["_id"]) for s in subjects_cursor]
+
+    # Batch enrollment counts in one aggregation
+    enrollment_counts = {
+        r["_id"]: r["count"]
+        for r in db.enrollments.aggregate([
+            {"$match": {"subject_id": {"$in": sub_id_strs}}},
+            {"$group": {"_id": "$subject_id", "count": {"$sum": 1}}}
+        ])
+    }
+
+    # Batch document counts in one aggregation
+    doc_counts = {
+        r["_id"]: r["count"]
+        for r in db.documents.aggregate([
+            {"$match": {"subject_id": {"$in": sub_id_strs}, "is_deleted": {"$ne": True}}},
+            {"$group": {"_id": "$subject_id", "count": {"$sum": 1}}}
+        ])
+    }
+
+    results = []
     for sub in subjects_cursor:
         sub_id_str = str(sub["_id"])
-        enrolled_count = db.enrollments.count_documents({"subject_id": sub_id_str})
-        docs_count = db.documents.count_documents({"subject_id": sub_id_str, "is_deleted": {"$ne": True}})
+        enrolled_count = enrollment_counts.get(sub_id_str, 0)
+        docs_count = doc_counts.get(sub_id_str, 0)
         is_enrolled = sub_id_str in enrolled_subject_ids
 
         results.append(serialize_subject(sub, enrolled_count, docs_count, is_enrolled))
@@ -930,22 +958,27 @@ def get_my_enrollments(user_email: str = Query(...)):
 
     clean_email = user_email.strip().lower()
     enrollments = list(db.enrollments.find({"student_email": clean_email}).sort("enrolled_at", -1))
-    results = []
+    if not enrollments:
+        return []
 
+    sub_ids = [e.get("subject_id", "") for e in enrollments if e.get("subject_id")]
+    valid_oids = [ObjectId(sid) for sid in sub_ids if ObjectId.is_valid(sid)]
+
+    subjects_by_id = {str(s["_id"]): s for s in db.subjects.find({"_id": {"$in": valid_oids}})}
+
+    # Batch submission counts for this student
+    doc_counts = {
+        r["_id"]: r["count"]
+        for r in db.documents.aggregate([
+            {"$match": {"subject_id": {"$in": sub_ids}, "uploaded_by_email": clean_email, "is_deleted": {"$ne": True}}},
+            {"$group": {"_id": "$subject_id", "count": {"$sum": 1}}}
+        ])
+    }
+
+    results = []
     for e in enrollments:
         sub_id_str = str(e.get("subject_id", ""))
-        sub = None
-        try:
-            sub = db.subjects.find_one({"_id": ObjectId(sub_id_str)})
-        except Exception:
-            sub = db.subjects.find_one({"subject_code": e.get("subject_code")})
-
-        submissions_count = db.documents.count_documents({
-            "subject_id": sub_id_str,
-            "uploaded_by_email": clean_email,
-            "is_deleted": {"$ne": True}
-        })
-
+        sub = subjects_by_id.get(sub_id_str)
         results.append({
             "enrollment_id": str(e["_id"]),
             "subject_id": sub_id_str,
@@ -955,7 +988,7 @@ def get_my_enrollments(user_email: str = Query(...)):
             "teacher_name": sub.get("teacher_name", "") if sub else "",
             "allow_duplicate_submissions": bool(sub.get("allow_duplicate_submissions", False)) if sub else False,
             "enrolled_at": e.get("enrolled_at", ""),
-            "my_submissions_count": submissions_count
+            "my_submissions_count": doc_counts.get(sub_id_str, 0)
         })
 
     return results

@@ -189,23 +189,30 @@ export default function App() {
     showToast("Signed out successfully.", "info");
   };
 
-  // Document Preview handler (records access in recently_viewed)
-  const handlePreview = async (doc) => {
-    try {
-      const res = await fetch(`${API_BASE}/documents/${doc.id}/info?user_email=${encodeURIComponent(user?.email || "")}`);
-      if (res.ok) {
-        const fullDoc = await res.json();
-        setPreviewDoc(fullDoc);
-      } else {
-        setPreviewDoc(doc);
-      }
-      // Refresh recently viewed in background
-      if (user?.role !== "Admin") {
-        const rRes = await fetch(`${API_BASE}/documents/recent?user_email=${encodeURIComponent(user?.email || "")}`);
-        if (rRes.ok) setRecentDocs(await rRes.json());
-      }
-    } catch {
-      setPreviewDoc(doc);
+  // Document Preview handler - Instant modal opening with background enrichment
+  const handlePreview = (doc) => {
+    if (!doc) return;
+    // 1. Immediately open modal with existing doc metadata (0ms latency)
+    setPreviewDoc(doc);
+
+    // 2. Fetch detailed extracted text in background
+    fetch(`${API_BASE}/documents/${doc.id}/info?user_email=${encodeURIComponent(user?.email || "")}&user_role=${encodeURIComponent(user?.role || "")}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((fullDoc) => {
+        if (fullDoc) {
+          setPreviewDoc((prev) => (prev && prev.id === doc.id ? { ...prev, ...fullDoc } : prev));
+        }
+      })
+      .catch(() => {});
+
+    // 3. Refresh recently viewed in background (fire-and-forget)
+    if (user?.role !== "Admin") {
+      fetch(`${API_BASE}/documents/recent?user_email=${encodeURIComponent(user?.email || "")}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data) setRecentDocs(data);
+        })
+        .catch(() => {});
     }
   };
 
@@ -229,9 +236,22 @@ export default function App() {
     }
   };
 
-  // Toggle Favorite / Bookmark handler
+  // Toggle Favorite / Bookmark handler (Optimistic Instant Response)
   const handleToggleFavorite = async (docId) => {
     if (!user) return;
+    const updateFav = (list) =>
+      list.map((d) => (d.id === docId ? { ...d, is_favorite: !d.is_favorite } : d));
+
+    setBrowseDocs(updateFav);
+    setMyDocs(updateFav);
+    setAllDocs(updateFav);
+    setRecentDocs(updateFav);
+    setFrequentDocs(updateFav);
+
+    if (previewDoc && previewDoc.id === docId) {
+      setPreviewDoc((prev) => ({ ...prev, is_favorite: !prev.is_favorite }));
+    }
+
     try {
       const res = await fetch(`${API_BASE}/documents/${docId}/favorite`, {
         method: "POST",
@@ -241,17 +261,14 @@ export default function App() {
       const data = await res.json();
       if (res.ok) {
         showToast(data.message, "success");
-        if (previewDoc && previewDoc.id === docId) {
-          setPreviewDoc({ ...previewDoc, is_favorite: data.is_favorite });
-        }
-        refreshData();
       }
     } catch {
       showToast("Failed to update favorite status.", "error");
+      refreshData();
     }
   };
 
-  // Soft Delete handler (moves document to Recycle Bin)
+  // Soft Delete handler (Optimistic Instant Removal)
   const handleDeleteDocument = (doc) => {
     setConfirmModalState({
       isOpen: true,
@@ -260,42 +277,51 @@ export default function App() {
       confirmText: "Move to Recycle Bin",
       variant: "danger",
       action: async () => {
+        const removeDoc = (list) => list.filter((d) => d.id !== doc.id);
+        setBrowseDocs(removeDoc);
+        setMyDocs(removeDoc);
+        setAllDocs(removeDoc);
+        setRecentDocs(removeDoc);
+        setFrequentDocs(removeDoc);
+        setRecycleDocs((prev) => [{ ...doc, is_deleted: true }, ...prev]);
+        setConfirmModalState((prev) => ({ ...prev, isOpen: false }));
+        showToast(data => "Document moved to Recycle Bin.", "success");
+
         try {
           const res = await fetch(
             `${API_BASE}/documents/${doc.id}?user_email=${encodeURIComponent(user?.email || "")}&user_name=${encodeURIComponent(user?.name || "")}&user_role=${encodeURIComponent(user?.role || "")}`,
             { method: "DELETE" }
           );
-          const data = await res.json();
-          if (res.ok) {
-            showToast(data.message || "Document moved to Recycle Bin.", "success");
-            setConfirmModalState((prev) => ({ ...prev, isOpen: false }));
-            refreshData();
-          } else {
+          if (!res.ok) {
+            const data = await res.json();
             throw new Error(data.detail || "Delete operation failed.");
           }
         } catch (err) {
           showToast(err.message, "error");
+          refreshData();
         }
       }
     });
   };
 
-  // Restore document from Recycle Bin
+  // Restore document from Recycle Bin (Optimistic)
   const handleRestoreDocument = async (doc) => {
+    setRecycleDocs((prev) => prev.filter((d) => d.id !== doc.id));
+    setMyDocs((prev) => [{ ...doc, is_deleted: false }, ...prev]);
+    showToast(`"${doc.original_filename}" restored successfully!`, "success");
+
     try {
       const res = await fetch(
         `${API_BASE}/documents/${doc.id}/restore?user_email=${encodeURIComponent(user?.email || "")}&user_name=${encodeURIComponent(user?.name || "")}&user_role=${encodeURIComponent(user?.role || "")}`,
         { method: "POST" }
       );
-      const data = await res.json();
-      if (res.ok) {
-        showToast(data.message || `"${doc.original_filename}" restored successfully!`, "success");
-        refreshData();
-      } else {
+      if (!res.ok) {
+        const data = await res.json();
         throw new Error(data.detail || "Failed to restore document.");
       }
     } catch (err) {
       showToast(err.message, "error");
+      refreshData();
     }
   };
 
@@ -308,28 +334,36 @@ export default function App() {
       confirmText: "Permanently Purge",
       variant: "danger",
       action: async () => {
+        setRecycleDocs((prev) => prev.filter((d) => d.id !== doc.id));
+        setConfirmModalState((prev) => ({ ...prev, isOpen: false }));
+        showToast("Document permanently purged from vault.", "success");
+
         try {
           const res = await fetch(
             `${API_BASE}/documents/${doc.id}/permanent?user_email=${encodeURIComponent(user?.email || "")}&user_name=${encodeURIComponent(user?.name || "")}&user_role=${encodeURIComponent(user?.role || "")}`,
             { method: "DELETE" }
           );
-          const data = await res.json();
-          if (res.ok) {
-            showToast(data.message || "Document permanently purged from vault.", "success");
-            setConfirmModalState((prev) => ({ ...prev, isOpen: false }));
-            refreshData();
-          } else {
+          if (!res.ok) {
+            const data = await res.json();
             throw new Error(data.detail || "Permanent delete failed.");
           }
         } catch (err) {
           showToast(err.message, "error");
+          refreshData();
         }
       }
     });
   };
 
-  // Approve Document (Admin)
+  // Approve Document (Optimistic)
   const handleApproveDocument = async (doc) => {
+    const markApproved = (list) =>
+      list.map((d) => (d.id === doc.id ? { ...d, approval_status: "Approved" } : d));
+    setAllDocs(markApproved);
+    setBrowseDocs(markApproved);
+    setMyDocs(markApproved);
+    showToast(`"${doc.original_filename}" approved & published!`, "success");
+
     try {
       const res = await fetch(`${API_BASE}/admin/documents/${doc.id}/approval`, {
         method: "PUT",
@@ -340,20 +374,25 @@ export default function App() {
           admin_name: user?.name
         })
       });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(`"${doc.original_filename}" approved & published!`, "success");
-        refreshData();
-      } else {
+      if (!res.ok) {
+        const data = await res.json();
         throw new Error(data.detail || "Approval failed.");
       }
     } catch (err) {
       showToast(err.message, "error");
+      refreshData();
     }
   };
 
-  // Confirm Rejection with Reason (Admin)
+  // Confirm Rejection with Reason (Optimistic)
   const handleConfirmReject = async (docId, reason) => {
+    const markRejected = (list) =>
+      list.map((d) => (d.id === docId ? { ...d, approval_status: "Rejected", rejection_reason: reason } : d));
+    setAllDocs(markRejected);
+    setMyDocs(markRejected);
+    setRejectionModalDoc(null);
+    showToast("Document rejected. Feedback sent to student/faculty.", "info");
+
     try {
       const res = await fetch(`${API_BASE}/admin/documents/${docId}/approval`, {
         method: "PUT",
@@ -365,16 +404,13 @@ export default function App() {
           admin_name: user?.name
         })
       });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(`Document rejected. Feedback sent to student/faculty.`, "info");
-        setRejectionModalDoc(null);
-        refreshData();
-      } else {
+      if (!res.ok) {
+        const data = await res.json();
         throw new Error(data.detail || "Rejection failed.");
       }
     } catch (err) {
       showToast(err.message, "error");
+      refreshData();
     }
   };
 
