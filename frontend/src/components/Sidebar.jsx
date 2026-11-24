@@ -101,7 +101,12 @@ export default function Sidebar({
       >
         {/* Brand Header */}
         <div className="sidebar-header">
-          <div className="brand-badge-container">
+          <div
+            className="brand-badge-container"
+            onClick={collapsed ? onToggleCollapse : undefined}
+            title={collapsed ? "Click to expand sidebar" : "CampusConnect"}
+            style={collapsed ? { cursor: "pointer" } : undefined}
+          >
             <div className="brand-icon-wrapper">
               {role === "Admin" ? (
                 <Shield className="brand-logo-icon" size={24} />
@@ -125,7 +130,7 @@ export default function Sidebar({
             className="sidebar-collapse-btn"
             onClick={onToggleCollapse}
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label="Toggle sidebar collapse"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
           </button>
@@ -177,6 +182,18 @@ export default function Sidebar({
 
         {/* Bottom User Profile Section */}
         <div className="sidebar-footer">
+          {collapsed && (
+            <button
+              type="button"
+              className="sidebar-expand-bottom-btn"
+              onClick={onToggleCollapse}
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+            >
+              <ChevronRight size={16} />
+            </button>
+          )}
+
           <div className="user-profile-widget">
             <div className="user-avatar-circle" title={user?.name || "Campus Member"}>
               {(user?.name || "U").charAt(0).toUpperCase()}

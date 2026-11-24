@@ -17,7 +17,9 @@ export default function Navbar({
   onQuickSearch,
   searchValue,
   setSearchValue,
-  pendingCount = 0
+  pendingCount = 0,
+  sidebarCollapsed = false,
+  onToggleSidebar
 }) {
   const role = user?.role || "Student";
 
@@ -79,7 +81,7 @@ export default function Navbar({
 
   return (
     <header className="campus-navbar">
-      {/* Left: Mobile Toggle & Page Title */}
+      {/* Left: Mobile Toggle, Desktop Toggle & Page Title */}
       <div className="navbar-left">
         <button
           type="button"
@@ -89,6 +91,18 @@ export default function Navbar({
         >
           <Menu size={20} />
         </button>
+
+        {onToggleSidebar && (
+          <button
+            type="button"
+            className="desktop-sidebar-toggle-btn"
+            onClick={onToggleSidebar}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <Menu size={18} />
+          </button>
+        )}
 
         <div className="navbar-heading-group">
           <h1 className="navbar-page-title">{title}</h1>

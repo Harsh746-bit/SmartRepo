@@ -717,6 +717,8 @@ export default function App() {
           searchValue={globalSearch}
           setSearchValue={setGlobalSearch}
           pendingCount={pendingCount}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
         />
 
         {/* Dynamic Page Content */}
