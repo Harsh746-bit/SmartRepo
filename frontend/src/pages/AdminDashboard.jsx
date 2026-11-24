@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   Files,
   GraduationCap,
@@ -12,9 +12,13 @@ import {
   ScrollText,
   ArrowRight,
   ShieldAlert,
-  BarChart2
+  BarChart2,
+  Check,
+  X,
+  AlertCircle
 } from "lucide-react";
 import StatsCard from "../components/StatsCard";
+import { API_BASE } from "../config";
 
 export default function AdminDashboard({
   analytics,
@@ -25,6 +29,92 @@ export default function AdminDashboard({
   onApprove,
   onReject
 }) {
+  const [teacherRequests, setTeacherRequests] = useState([]);
+  const [loadingRequests, setLoadingRequests] = useState(false);
+  const [requestActionId, setRequestActionId] = useState(null);
+  const [allSubjects, setAllSubjects] = useState([]);
+  const [loadingSubjects, setLoadingSubjects] = useState(false);
+  const [actionNotice, setActionNotice] = useState(null);
+
+  const fetchAdminData = async () => {
+    setLoadingRequests(true);
+    setLoadingSubjects(true);
+    try {
+      // 1. Fetch pending teacher requests
+      const reqRes = await fetch(`${API_BASE}/admin/teacher-requests`);
+      if (reqRes.ok) {
+        const reqData = await reqRes.json();
+        setTeacherRequests(Array.isArray(reqData) ? reqData : []);
+      }
+
+      // 2. Fetch all subjects
+      const subRes = await fetch(`${API_BASE}/subjects?user_role=Admin`);
+      if (subRes.ok) {
+        const subData = await subRes.json();
+        setAllSubjects(Array.isArray(subData) ? subData : []);
+      }
+    } catch (err) {
+      console.error("Error fetching admin dashboard data:", err);
+    } finally {
+      setLoadingRequests(false);
+      setLoadingSubjects(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAdminData();
+  }, []);
+
+  const handleApproveTeacher = async (teacherId, teacherName) => {
+    setRequestActionId(teacherId);
+    setActionNotice(null);
+    try {
+      const res = await fetch(`${API_BASE}/admin/teacher-requests/${teacherId}/approve`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          admin_email: "admin@smartrepo.edu",
+          admin_name: "Administrator"
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Failed to approve teacher request.");
+      }
+      setActionNotice({ type: "success", text: data.message || `Teacher account for ${teacherName} approved!` });
+      await fetchAdminData();
+    } catch (err) {
+      setActionNotice({ type: "error", text: err.message });
+    } finally {
+      setRequestActionId(null);
+    }
+  };
+
+  const handleRejectTeacher = async (teacherId, teacherName) => {
+    setRequestActionId(teacherId);
+    setActionNotice(null);
+    try {
+      const res = await fetch(`${API_BASE}/admin/teacher-requests/${teacherId}/reject`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          admin_email: "admin@smartrepo.edu",
+          admin_name: "Administrator"
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Failed to reject teacher request.");
+      }
+      setActionNotice({ type: "success", text: data.message || `Teacher account for ${teacherName} rejected.` });
+      await fetchAdminData();
+    } catch (err) {
+      setActionNotice({ type: "error", text: err.message });
+    } finally {
+      setRequestActionId(null);
+    }
+  };
+
   const totalDocs = analytics?.total_documents ?? 0;
   const totalStudents = analytics?.total_students ?? 0;
   const totalTeachers = analytics?.total_teachers ?? 0;
@@ -43,7 +133,7 @@ export default function AdminDashboard({
         <div className="welcome-banner-text">
           <h2>Campus Repository Administration Console 🛡️</h2>
           <p>
-            Institution-wide governance overview. Monitor student and faculty uploads, review pending submissions, track SHA-256 duplicate intercepts, and review security audit logs.
+            Institution-wide governance overview. Authorize faculty registration requests, review student submissions across courses, monitor SHA-256 duplicate intercepts, and oversee subject repositories.
           </p>
           <div className="welcome-banner-cta-group">
             <button
@@ -51,14 +141,14 @@ export default function AdminDashboard({
               className="banner-cta-btn primary"
               onClick={() => onNavigate("pending_approvals")}
             >
-              <Clock3 size={16} /> Review Pending Submissions ({pendingApprovals})
+              <Clock3 size={16} /> Moderation Queue ({pendingApprovals})
             </button>
             <button
               type="button"
               className="banner-cta-btn secondary"
               onClick={() => onNavigate("user_management")}
             >
-              <GraduationCap size={16} /> Student & Faculty Directory
+              <GraduationCap size={16} /> User Directory ({totalStudents + totalTeachers})
             </button>
           </div>
         </div>
@@ -75,13 +165,28 @@ export default function AdminDashboard({
           onClick={() => onNavigate("all_documents")}
         />
         <StatsCard
-          title="Pending Approvals"
+          title="Pending Moderation"
           value={pendingApprovals}
-          subtitle="Student uploads awaiting review"
+          subtitle="Documents awaiting review"
           icon={Clock3}
           colorScheme="amber"
           badge={pendingApprovals > 0 ? "Action Required" : "Up to Date"}
           onClick={() => onNavigate("pending_approvals")}
+        />
+        <StatsCard
+          title="Teacher Approval Requests"
+          value={teacherRequests.length}
+          subtitle="Pending faculty accounts"
+          icon={BookOpen}
+          colorScheme="indigo"
+          badge={teacherRequests.length > 0 ? "Needs Review" : null}
+        />
+        <StatsCard
+          title="Subject Repositories"
+          value={allSubjects.length}
+          subtitle="Active campus courses"
+          icon={GraduationCap}
+          colorScheme="teal"
         />
         <StatsCard
           title="Approved Documents"
@@ -108,14 +213,6 @@ export default function AdminDashboard({
           onClick={() => onNavigate("user_management")}
         />
         <StatsCard
-          title="Faculty Members"
-          value={totalTeachers}
-          subtitle="Academic instructors"
-          icon={BookOpen}
-          colorScheme="indigo"
-          onClick={() => onNavigate("user_management")}
-        />
-        <StatsCard
           title="Duplicate Intercepts"
           value={duplicateFiles}
           subtitle="SHA-256 blocks"
@@ -124,17 +221,209 @@ export default function AdminDashboard({
           badge={duplicateFiles > 0 ? "Saved Storage" : null}
           onClick={() => onNavigate("duplicate_files")}
         />
-        <StatsCard
-          title="Vault Storage Used"
-          value={storageFormatted}
-          subtitle="Cloud & disk physical allocation"
-          icon={HardDrive}
-          colorScheme="teal"
-          onClick={() => onNavigate("storage_management")}
-        />
       </div>
 
-      {/* Middle Grid: Pending Approvals & Leaderboard */}
+      {/* Action Notice */}
+      {actionNotice && (
+        <div
+          style={{
+            marginBottom: "20px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "12px 18px",
+            borderRadius: "8px",
+            background: actionNotice.type === "success" ? "#ecfdf5" : "#fef2f2",
+            color: actionNotice.type === "success" ? "#065f46" : "#991b1b",
+            border: `1px solid ${actionNotice.type === "success" ? "#a7f3d0" : "#fecaca"}`
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            {actionNotice.type === "success" ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
+            <span style={{ fontSize: "0.9rem", fontWeight: "500" }}>{actionNotice.text}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionNotice(null)}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "inherit" }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* SECTION: PENDING TEACHER REGISTRATION APPROVAL REQUESTS */}
+      <div className="dashboard-full-section" style={{ marginBottom: "28px" }}>
+        <div className="section-header-row">
+          <div className="section-title-wrapper">
+            <BookOpen size={18} className="section-icon indigo" />
+            <h3>Pending Faculty Approval Requests ({teacherRequests.length})</h3>
+          </div>
+          <span style={{ fontSize: "0.85rem", color: "#64748b" }}>
+            Review and activate faculty accounts before they can manage repositories
+          </span>
+        </div>
+
+        {teacherRequests.length > 0 ? (
+          <div style={{ background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.88rem" }}>
+              <thead>
+                <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569", textAlign: "left" }}>
+                  <th style={{ padding: "12px 16px" }}>Faculty Name</th>
+                  <th style={{ padding: "12px 16px" }}>Email</th>
+                  <th style={{ padding: "12px 16px" }}>Department</th>
+                  <th style={{ padding: "12px 16px" }}>Requested At</th>
+                  <th style={{ padding: "12px 16px" }}>Status</th>
+                  <th style={{ padding: "12px 16px", textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {teacherRequests.map((req) => {
+                  const isProcessing = requestActionId === req.id;
+                  return (
+                    <tr key={req.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                      <td style={{ padding: "12px 16px", fontWeight: "600", color: "#0f172a" }}>
+                        {req.full_name}
+                      </td>
+                      <td style={{ padding: "12px 16px", color: "#64748b" }}>
+                        {req.email}
+                      </td>
+                      <td style={{ padding: "12px 16px", color: "#334155" }}>
+                        {req.department || "Computer Science"}
+                      </td>
+                      <td style={{ padding: "12px 16px", color: "#64748b", fontSize: "0.8rem" }}>
+                        {req.requested_at ? new Date(req.requested_at).toLocaleDateString() : "Recent"}
+                      </td>
+                      <td style={{ padding: "12px 16px" }}>
+                        <span style={{ background: "#fef3c7", color: "#92400e", padding: "3px 8px", borderRadius: "4px", fontSize: "0.75rem", fontWeight: "600" }}>
+                          Pending Approval
+                        </span>
+                      </td>
+                      <td style={{ padding: "12px 16px", textAlign: "right" }}>
+                        <div style={{ display: "inline-flex", gap: "8px" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleApproveTeacher(req.id, req.full_name)}
+                            disabled={isProcessing}
+                            style={{
+                              background: "#059669",
+                              color: "#ffffff",
+                              border: "none",
+                              borderRadius: "6px",
+                              padding: "6px 12px",
+                              fontSize: "0.78rem",
+                              fontWeight: "600",
+                              cursor: isProcessing ? "not-allowed" : "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "4px"
+                            }}
+                          >
+                            <Check size={14} /> Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRejectTeacher(req.id, req.full_name)}
+                            disabled={isProcessing}
+                            style={{
+                              background: "#dc2626",
+                              color: "#ffffff",
+                              border: "none",
+                              borderRadius: "6px",
+                              padding: "6px 12px",
+                              fontSize: "0.78rem",
+                              fontWeight: "600",
+                              cursor: isProcessing ? "not-allowed" : "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "4px"
+                            }}
+                          >
+                            <X size={14} /> Reject
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty-sub-card">
+            <CheckCircle2 size={32} className="empty-icon emerald" />
+            <p>No pending teacher registration requests. All faculty accounts are reviewed!</p>
+          </div>
+        )}
+      </div>
+
+      {/* SECTION: ALL CAMPUS SUBJECT REPOSITORIES */}
+      <div className="dashboard-full-section" style={{ marginBottom: "28px" }}>
+        <div className="section-header-row">
+          <div className="section-title-wrapper">
+            <GraduationCap size={18} className="section-icon blue" />
+            <h3>Campus Subject Repositories ({allSubjects.length})</h3>
+          </div>
+          <span style={{ fontSize: "0.85rem", color: "#64748b" }}>
+            System-wide course repositories, instructor assignments, and deduplication rules
+          </span>
+        </div>
+
+        {allSubjects.length > 0 ? (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "16px" }}>
+            {allSubjects.map((sub) => (
+              <div
+                key={sub.id}
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "10px",
+                  padding: "16px",
+                  boxShadow: "0 2px 6px rgba(0,0,0,0.03)",
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "space-between"
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                    <span style={{ fontSize: "0.75rem", fontWeight: "700", background: "#e0e7ff", color: "#3730a3", padding: "3px 8px", borderRadius: "4px" }}>
+                      {sub.subject_code}
+                    </span>
+                    {sub.allow_duplicate_submissions ? (
+                      <span style={{ fontSize: "0.7rem", color: "#d97706", background: "#fef3c7", padding: "2px 6px", borderRadius: "4px" }}>
+                        Duplicates Allowed
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: "0.7rem", color: "#059669", background: "#d1fae5", padding: "2px 6px", borderRadius: "4px" }}>
+                        SHA-256 Guard Active
+                      </span>
+                    )}
+                  </div>
+                  <h4 style={{ margin: "0 0 6px 0", fontSize: "1rem", color: "#1e293b", fontWeight: "600" }}>
+                    {sub.subject_name}
+                  </h4>
+                  <p style={{ margin: "0 0 10px 0", fontSize: "0.82rem", color: "#64748b" }}>
+                    Faculty: <strong>{sub.teacher_name || sub.teacher_email || "Faculty"}</strong>
+                  </p>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f1f5f9", paddingTop: "10px", fontSize: "0.8rem", color: "#64748b" }}>
+                  <span>Enrolled: <strong>{sub.enrolled_students_count || 0} students</strong></span>
+                  <span>Submissions: <strong>{sub.documents_count || 0}</strong></span>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-sub-card">
+            <BookOpen size={28} className="empty-icon" />
+            <p>No subject repositories configured yet.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Middle Grid: Pending Document Approvals & Leaderboard */}
       <div className="dashboard-double-columns">
         {/* Pending Submissions Queue */}
         <div className="dashboard-card-section">
@@ -298,47 +587,32 @@ export default function AdminDashboard({
           <button
             type="button"
             className="section-link-btn"
-            onClick={() => onNavigate("activity_logs")}
+            onClick={() => onNavigate("audit_logs")}
           >
-            Audit History <ArrowRight size={14} />
+            Audit Log <ArrowRight size={14} />
           </button>
         </div>
 
         {activityLogs && activityLogs.length > 0 ? (
-          <div className="audit-table-container">
-            <table className="campus-data-table">
-              <thead>
-                <tr>
-                  <th>Timestamp</th>
-                  <th>Action</th>
-                  <th>User</th>
-                  <th>Role</th>
-                  <th>Document / Resource</th>
-                  <th>Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activityLogs.slice(0, 5).map((log, idx) => (
-                  <tr key={log.id || idx}>
-                    <td className="text-muted">{new Date(log.timestamp).toLocaleString()}</td>
-                    <td>
-                      <span className={`audit-badge badge-${log.action?.toLowerCase()}`}>
-                        {log.action}
-                      </span>
-                    </td>
-                    <td className="font-medium">{log.user_name || log.user_email}</td>
-                    <td><span className="text-muted">({log.user_role})</span></td>
-                    <td className="font-medium">{log.document_name || "—"}</td>
-                    <td className="text-muted text-sm">{log.details}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="audit-log-stream">
+            {activityLogs.slice(0, 5).map((log, idx) => (
+              <div key={log.id || idx} className="audit-stream-row">
+                <span className="audit-time">
+                  {log.timestamp ? new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Just now"}
+                </span>
+                <span className={`audit-badge action-${(log.action || "").toLowerCase()}`}>
+                  {log.action}
+                </span>
+                <span className="audit-desc">
+                  <strong>{log.user_name || log.user_email}</strong>: {log.details}
+                </span>
+              </div>
+            ))}
           </div>
         ) : (
           <div className="empty-sub-card">
             <ScrollText size={28} className="empty-icon" />
-            <p>Cryptographic audit logs will be recorded as repository events occur.</p>
+            <p>Security audit entries will record as users interact with the vault.</p>
           </div>
         )}
       </div>

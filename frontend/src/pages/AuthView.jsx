@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import {
   GraduationCap,
   BookOpen,
-  Shield,
   Eye,
   EyeOff,
   ArrowRight,
@@ -10,13 +9,15 @@ import {
   Lock,
   Mail,
   User as UserIcon,
-  AlertCircle
+  AlertCircle,
+  Clock,
+  Sparkles
 } from "lucide-react";
 import { API_BASE } from "../config";
 
 export default function AuthView({ onLoginSuccess }) {
-  const [role, setRole] = useState("Student"); // 'Student' | 'Teacher' | 'Admin'
   const [isRegister, setIsRegister] = useState(false);
+  const [registerRole, setRegisterRole] = useState("Student"); // 'Student' | 'Teacher'
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
@@ -24,6 +25,7 @@ export default function AuthView({ onLoginSuccess }) {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const [teacherPendingNotice, setTeacherPendingNotice] = useState(null);
 
   const API_URL = API_BASE;
 
@@ -31,6 +33,7 @@ export default function AuthView({ onLoginSuccess }) {
     e.preventDefault();
     setErrorMessage("");
     setSuccessMessage("");
+    setTeacherPendingNotice(null);
     setLoading(true);
 
     try {
@@ -40,7 +43,7 @@ export default function AuthView({ onLoginSuccess }) {
             full_name: fullName.trim(),
             email: email.trim().toLowerCase(),
             password: password,
-            role: role
+            role: registerRole
           }
         : {
             email: email.trim().toLowerCase(),
@@ -59,6 +62,23 @@ export default function AuthView({ onLoginSuccess }) {
         throw new Error(data.detail || "Authentication failed. Please verify your credentials.");
       }
 
+      // If registered as Teacher, they must wait for admin approval
+      if (isRegister && (data.pending_approval || registerRole === "Teacher")) {
+        setTeacherPendingNotice({
+          name: fullName.trim(),
+          email: email.trim().toLowerCase(),
+          message: data.message || "Your teacher registration request has been submitted and is awaiting administrator approval."
+        });
+        setIsRegister(false);
+        setPassword("");
+        return;
+      }
+
+      const token = data.access_token || data.token;
+      if (!token) {
+        throw new Error("No authentication token received from server.");
+      }
+
       if (isRegister) {
         setSuccessMessage("Account created successfully! Signing you in...");
       }
@@ -67,14 +87,15 @@ export default function AuthView({ onLoginSuccess }) {
       const userPayload = {
         name: data.user?.full_name || data.full_name || fullName || "Campus Member",
         email: data.user?.email || data.email || email.toLowerCase(),
-        role: data.user?.role || data.role || role
+        role: data.user?.role || data.role || "Student",
+        status: data.user?.status || "Active"
       };
 
-      localStorage.setItem("smartrepo_token", data.access_token);
+      localStorage.setItem("smartrepo_token", token);
       localStorage.setItem("smartrepo_user", JSON.stringify(userPayload));
 
       setTimeout(() => {
-        onLoginSuccess(userPayload, data.access_token);
+        onLoginSuccess(userPayload, token);
       }, 400);
     } catch (err) {
       setErrorMessage(err.message || "An unexpected connection error occurred.");
@@ -110,15 +131,15 @@ export default function AuthView({ onLoginSuccess }) {
           <div className="auth-highlights-list">
             <div className="auth-highlight-item">
               <CheckCircle2 size={18} className="highlight-check" />
-              <span>Cryptographic SHA-256 deduplication</span>
+              <span>Subject-wise isolated repositories & course enrollment</span>
             </div>
             <div className="auth-highlight-item">
               <CheckCircle2 size={18} className="highlight-check" />
-              <span>Deep full-text search across PDFs and slides</span>
+              <span>Cryptographic SHA-256 duplicate detection</span>
             </div>
             <div className="auth-highlight-item">
               <CheckCircle2 size={18} className="highlight-check" />
-              <span>PBKDF2 security with strict role-based access</span>
+              <span>Strict Role-Based Access Control (Student, Teacher, Admin)</span>
             </div>
           </div>
 
@@ -130,49 +151,54 @@ export default function AuthView({ onLoginSuccess }) {
         {/* Right Authentication Form Card */}
         <div className="auth-form-panel">
           <div className="auth-form-header">
-            <h2>{isRegister ? "Create Campus Account" : "Welcome Back"}</h2>
+            <h2>{isRegister ? "Create Campus Account" : "Unified Institutional Login"}</h2>
             <p>
               {isRegister
-                ? "Enroll with your collegiate credentials to access course materials"
-                : "Sign in with your institutional email and password to proceed"}
+                ? "Select your campus role and register your academic profile"
+                : "Sign in with your institutional email and password to access your dashboard"}
             </p>
           </div>
 
-          {/* Role Selection Tabs */}
-          <div className="auth-role-tabs">
-            <button
-              type="button"
-              className={`auth-role-tab ${role === "Student" ? "active" : ""}`}
-              onClick={() => { setRole("Student"); setErrorMessage(""); }}
-            >
-              <GraduationCap size={16} />
-              <span>Student</span>
-            </button>
+          {/* Pending Teacher Approval Notice Card */}
+          {teacherPendingNotice && (
+            <div className="auth-alert" style={{ background: "#eff6ff", borderColor: "#93c5fd", color: "#1e40af", display: "flex", flexDirection: "column", gap: "8px", padding: "16px", borderRadius: "10px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "600", fontSize: "0.95rem" }}>
+                <Clock size={20} color="#2563eb" />
+                <span>Teacher Registration Submitted</span>
+              </div>
+              <p style={{ margin: 0, fontSize: "0.88rem", lineHeight: "1.4" }}>
+                Welcome, <strong>{teacherPendingNotice.name}</strong>! Your faculty account request (<em>{teacherPendingNotice.email}</em>) has been registered and is currently <strong>Pending Administrator Review</strong>.
+              </p>
+              <p style={{ margin: 0, fontSize: "0.82rem", color: "#3b82f6" }}>
+                An administrator will review and activate your teacher privileges shortly. Once approved, you can log in below.
+              </p>
+            </div>
+          )}
 
-            <button
-              type="button"
-              className={`auth-role-tab ${role === "Teacher" ? "active" : ""}`}
-              onClick={() => { setRole("Teacher"); setErrorMessage(""); }}
-            >
-              <BookOpen size={16} />
-              <span>Faculty</span>
-            </button>
+          {/* Role Selection Tabs ONLY in Register Mode (Common unified login without role tabs) */}
+          {isRegister && (
+            <div className="auth-role-tabs" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+              <button
+                type="button"
+                className={`auth-role-tab ${registerRole === "Student" ? "active" : ""}`}
+                onClick={() => { setRegisterRole("Student"); setErrorMessage(""); }}
+              >
+                <GraduationCap size={16} />
+                <span>Student</span>
+              </button>
 
-            <button
-              type="button"
-              className={`auth-role-tab ${role === "Admin" ? "active" : ""}`}
-              onClick={() => {
-                setRole("Admin");
-                setIsRegister(false);
-                setErrorMessage("");
-              }}
-            >
-              <Shield size={16} />
-              <span>Admin</span>
-            </button>
-          </div>
+              <button
+                type="button"
+                className={`auth-role-tab ${registerRole === "Teacher" ? "active" : ""}`}
+                onClick={() => { setRegisterRole("Teacher"); setErrorMessage(""); }}
+              >
+                <BookOpen size={16} />
+                <span>Faculty / Teacher</span>
+              </button>
+            </div>
+          )}
 
-          {/* Alerts */}
+          {/* Error & Success Alerts */}
           {errorMessage && (
             <div className="auth-alert error">
               <AlertCircle size={16} />
@@ -198,7 +224,7 @@ export default function AuthView({ onLoginSuccess }) {
                     id="auth-fullname"
                     type="text"
                     className="auth-input"
-                    placeholder="e.g. Dr. Jane Doe or Alex Smith"
+                    placeholder={registerRole === "Teacher" ? "e.g. Dr. Alan Turing" : "e.g. Alex Smith"}
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
                     required={isRegister}
@@ -215,7 +241,7 @@ export default function AuthView({ onLoginSuccess }) {
                   id="auth-email"
                   type="email"
                   className="auth-input"
-                  placeholder={role === "Admin" ? "admin@smartrepo.edu" : "name@college.edu"}
+                  placeholder="name@smartrepo.edu"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -231,7 +257,7 @@ export default function AuthView({ onLoginSuccess }) {
                   id="auth-password"
                   type={showPassword ? "text" : "password"}
                   className="auth-input"
-                  placeholder="Enter your security password"
+                  placeholder="Enter your password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
@@ -255,34 +281,37 @@ export default function AuthView({ onLoginSuccess }) {
               {loading ? (
                 "Verifying credentials..."
               ) : isRegister ? (
-                <>Register {role} Account <ArrowRight size={16} /></>
+                <>
+                  Register as {registerRole === "Teacher" ? "Teacher (Faculty)" : "Student"} <ArrowRight size={16} />
+                </>
               ) : (
-                <>Sign In as {role === "Teacher" ? "Faculty" : role} <ArrowRight size={16} /></>
+                <>
+                  Sign In <ArrowRight size={16} />
+                </>
               )}
             </button>
           </form>
 
-          {/* Toggle between Login and Registration (not for Admin) */}
-          {role !== "Admin" && (
-            <div className="auth-toggle-footer">
-              <span>
-                {isRegister
-                  ? "Already enrolled with CampusConnect?"
-                  : "First time accessing the repository?"}
-              </span>
-              <button
-                type="button"
-                className="auth-toggle-link"
-                onClick={() => {
-                  setIsRegister(!isRegister);
-                  setErrorMessage("");
-                  setSuccessMessage("");
-                }}
-              >
-                {isRegister ? "Sign in here" : "Create your account"}
-              </button>
-            </div>
-          )}
+          {/* Toggle between Login and Registration */}
+          <div className="auth-toggle-footer">
+            <span>
+              {isRegister
+                ? "Already registered with CampusConnect?"
+                : "First time accessing the repository?"}
+            </span>
+            <button
+              type="button"
+              className="auth-toggle-link"
+              onClick={() => {
+                setIsRegister(!isRegister);
+                setErrorMessage("");
+                setSuccessMessage("");
+                setTeacherPendingNotice(null);
+              }}
+            >
+              {isRegister ? "Sign In to your account" : "Create your account"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

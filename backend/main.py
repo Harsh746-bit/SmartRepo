@@ -4,6 +4,7 @@ import secrets
 import hashlib
 import uuid
 import calendar
+import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
@@ -18,6 +19,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import mongo
 import extractor
+
+upload_lock = asyncio.Lock()
 
 app = FastAPI(
     title="Smart Repository Management System",
@@ -266,37 +269,81 @@ def register_user(user_data: dict):
             detail="An account with this email already exists. Please sign in instead."
         )
 
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Student registration: Active immediately, no admin approval required
+    # Teacher registration: Initial status is Pending, requires admin approval
+    initial_status = "Active" if role == "Student" else "Pending"
+
     new_user_doc = {
         "full_name": full_name,
         "email": email,
         "password_hash": hash_password(password),
         "role": role,
-        "status": "Active",
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "status": initial_status,
+        "created_at": now_iso
     }
 
     result = db.users.insert_one(new_user_doc)
+    user_id_str = str(result.inserted_id)
     new_user_doc["_id"] = result.inserted_id
 
+    if role == "Teacher":
+        # Create teacher approval request record
+        db.teacher_requests.insert_one({
+            "user_id": user_id_str,
+            "full_name": full_name,
+            "email": email,
+            "status": "Pending",
+            "requested_at": now_iso,
+            "reviewed_at": None,
+            "reviewed_by": None
+        })
+
+        log_activity(
+            action="TEACHER_REGISTER_REQUEST",
+            user_email=email,
+            user_name=full_name,
+            user_role="Teacher",
+            details="New Teacher registration submitted (Pending administrative approval)"
+        )
+
+        return {
+            "message": "Teacher registration submitted successfully! Your account is pending administrator approval before you can access teacher functionalities.",
+            "pending_approval": True,
+            "access_token": None,
+            "token": None,
+            "user": {
+                "id": user_id_str,
+                "full_name": full_name,
+                "email": email,
+                "role": "Teacher",
+                "status": "Pending"
+            }
+        }
+
+    # Student: Issue JWT token immediately
     token = create_access_token(new_user_doc)
 
     log_activity(
         action="USER_REGISTER",
         user_email=email,
         user_name=full_name,
-        user_role=role,
-        details=f"New {role} account registered"
+        user_role="Student",
+        details="New Student account registered and activated"
     )
 
     return {
         "message": f"Welcome to CampusConnect, {full_name}!",
         "access_token": token,
+        "token": token,
         "token_type": "bearer",
+        "pending_approval": False,
         "user": {
-            "id": str(result.inserted_id),
+            "id": user_id_str,
             "full_name": full_name,
             "email": email,
-            "role": role,
+            "role": "Student",
             "status": "Active"
         }
     }
@@ -310,8 +357,6 @@ def login(user_data: dict):
 
     email = str(user_data.get("email", "")).strip().lower()
     password = str(user_data.get("password", ""))
-    role_input = str(user_data.get("role", "Student")).strip()
-    full_name_input = str(user_data.get("full_name", "")).strip()
 
     if not email or not password:
         raise HTTPException(status_code=400, detail="Email and password are required.")
@@ -319,74 +364,57 @@ def login(user_data: dict):
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise HTTPException(status_code=400, detail="Please enter a valid email address.")
 
-    role_map = {"student": "Student", "teacher": "Teacher", "faculty": "Teacher", "admin": "Admin"}
-    target_role = role_map.get(role_input.lower(), "Student")
-
     user = db.users.find_one({"email": email})
 
-    if user:
-        # Existing account: verify password
-        if not verify_password(password, user.get("password_hash", "")):
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid email or password. Please verify your credentials."
-            )
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password. Please verify your credentials."
+        )
 
-        if user.get("status", "Active") == "Suspended":
-            raise HTTPException(
-                status_code=403,
-                detail="Your account has been suspended by an administrator."
-            )
-    else:
-        # User not found in database:
-        # Admin accounts cannot be auto-created; only registered administrator can log in
-        if target_role == "Admin":
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid administrator credentials."
-            )
+    # Verify password hash
+    if not verify_password(password, user.get("password_hash", "")):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password. Please verify your credentials."
+        )
 
-        # Requirement: Don't take random dummy users; only when a user logs in, add them to database & admin page!
-        if len(password) < 4:
-            raise HTTPException(
-                status_code=400,
-                detail="Password must be at least 4 characters long."
-            )
+    user_status = user.get("status", "Active")
+    user_role = user.get("role", "Student")
 
-        if full_name_input:
-            clean_name = full_name_input
-        else:
-            local_part = email.split("@")[0]
-            tokens = [t.capitalize() for t in re.split(r"[._\-+0-9]+", local_part) if t]
-            clean_name = " ".join(tokens) if tokens else f"{target_role} ({local_part})"
+    # Teacher approval check
+    if user_role == "Teacher" and user_status == "Pending":
+        raise HTTPException(
+            status_code=403,
+            detail="Your teacher registration request is currently pending administrative approval. Please wait for an administrator to review your account."
+        )
 
-        new_user_doc = {
-            "full_name": clean_name,
-            "email": email,
-            "password_hash": hash_password(password),
-            "role": target_role,
-            "status": "Active",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
+    if user_status == "Rejected":
+        raise HTTPException(
+            status_code=403,
+            detail="Your teacher registration request has been rejected by an administrator."
+        )
 
-        res = db.users.insert_one(new_user_doc)
-        new_user_doc["_id"] = res.inserted_id
-        user = new_user_doc
-        print(f"[INFO] New {target_role} enrolled on login in MongoDB Atlas: {email} ({clean_name})")
-
-        log_activity(
-            action="USER_FIRST_LOGIN",
-            user_email=email,
-            user_name=clean_name,
-            user_role=target_role,
-            details=f"New {target_role} enrolled upon initial login"
+    if user_status == "Suspended":
+        raise HTTPException(
+            status_code=403,
+            detail="Your account has been suspended by an administrator."
         )
 
     access_token = create_access_token(user)
 
+    log_activity(
+        action="USER_LOGIN",
+        user_email=email,
+        user_name=user.get("full_name", "Member"),
+        user_role=user_role,
+        details=f"{user_role} signed in successfully"
+    )
+
     return {
-        "message": f"Welcome, {user['full_name']}!",
+        "message": f"Welcome back, {user['full_name']}!",
         "access_token": access_token,
+        "token": access_token,
         "token_type": "bearer",
         "user": {
             "id": str(user["_id"]),
@@ -423,6 +451,9 @@ def serialize_document_for_client(d: dict, user_favorites: Optional[set] = None)
         "rejection_reason": d.get("rejection_reason", ""),
         "download_count": d.get("download_count", 0),
         "preview_count": d.get("preview_count", 0),
+        "subject_id": str(d.get("subject_id", "")),
+        "subject_name": d.get("subject_name", ""),
+        "subject_code": d.get("subject_code", ""),
         "keywords": d.get("keywords", [])[:8],
         "extracted_text_preview": (d.get("extracted_text", "")[:280] + "...") if d.get("extracted_text") else "",
         "is_deleted": bool(d.get("is_deleted", False)),
@@ -440,6 +471,496 @@ def get_user_favorite_set(db, user_email: Optional[str]) -> set:
     return {str(f.get("document_id")) for f in favs}
 
 
+def check_document_access(doc: dict, user_email: Optional[str], user_role: Optional[str], db) -> bool:
+    """
+    Enforces strict Role-Based Access Control and IDOR protection:
+    - Student: Can access ONLY their own uploaded documents.
+    - Teacher: Can access their own uploaded documents OR documents submitted within subjects they own.
+    - Admin: Full system-wide access.
+    """
+    if not doc:
+        return False
+    clean_role = (user_role or "").strip().capitalize()
+    clean_email = (user_email or "").strip().lower()
+
+    if clean_role == "Admin":
+        return True
+
+    doc_uploader = (doc.get("uploaded_by_email") or "").strip().lower()
+    is_owner = bool(clean_email and doc_uploader == clean_email)
+
+    if clean_role == "Student":
+        return is_owner
+
+    if clean_role == "Teacher":
+        if is_owner:
+            return True
+        sub_id = doc.get("subject_id")
+        if sub_id:
+            try:
+                sub = db.subjects.find_one({"_id": ObjectId(sub_id)})
+            except Exception:
+                sub = db.subjects.find_one({"subject_code": sub_id})
+            if sub and sub.get("teacher_email", "").lower() == clean_email:
+                return True
+        return False
+
+    return False
+
+
+# =========================================================================
+# Subject-Wise Document Repositories & Course Enrollment
+# =========================================================================
+
+def serialize_subject(sub: dict, enrolled_count: int = 0, docs_count: int = 0, is_enrolled: bool = False) -> dict:
+    return {
+        "id": str(sub["_id"]),
+        "subject_name": sub.get("subject_name", ""),
+        "subject_code": sub.get("subject_code", ""),
+        "description": sub.get("description", ""),
+        "teacher_id": str(sub.get("teacher_id", "")),
+        "teacher_email": sub.get("teacher_email", ""),
+        "teacher_name": sub.get("teacher_name", ""),
+        "allow_duplicate_submissions": bool(sub.get("allow_duplicate_submissions", False)),
+        "created_at": sub.get("created_at", ""),
+        "enrolled_students_count": enrolled_count,
+        "submissions_count": docs_count,
+        "is_enrolled": is_enrolled
+    }
+
+
+def seed_initial_subjects(db):
+    if db is None:
+        return
+    try:
+        if db.subjects.count_documents({}) == 0:
+            teacher = db.users.find_one({"role": "Teacher", "status": "Active"})
+            t_id = str(teacher["_id"]) if teacher else "teacher_default"
+            t_email = teacher["email"] if teacher else "omkar@gmail.com"
+            t_name = teacher.get("full_name") if teacher else "Prof. Omkar"
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            initial_subjects = [
+                {
+                    "subject_name": "Data Structures & Algorithms",
+                    "subject_code": "CS201",
+                    "description": "Fundamental data structures, stacks, queues, trees, graphs, and sorting algorithms.",
+                    "teacher_id": t_id,
+                    "teacher_email": t_email,
+                    "teacher_name": t_name,
+                    "allow_duplicate_submissions": False,
+                    "created_at": now_iso
+                },
+                {
+                    "subject_name": "Operating Systems",
+                    "subject_code": "CS301",
+                    "description": "Kernel architecture, process synchronization, CPU scheduling, virtual memory, and deadlocks.",
+                    "teacher_id": t_id,
+                    "teacher_email": t_email,
+                    "teacher_name": t_name,
+                    "allow_duplicate_submissions": False,
+                    "created_at": now_iso
+                },
+                {
+                    "subject_name": "Computer Networks",
+                    "subject_code": "CS302",
+                    "description": "OSI & TCP/IP models, routing protocols, flow control, socket programming, and network security.",
+                    "teacher_id": t_id,
+                    "teacher_email": t_email,
+                    "teacher_name": t_name,
+                    "allow_duplicate_submissions": False,
+                    "created_at": now_iso
+                },
+                {
+                    "subject_name": "Database Management Systems",
+                    "subject_code": "CS202",
+                    "description": "Relational algebra, SQL queries, normalization, indexing, transaction processing, and NoSQL.",
+                    "teacher_id": t_id,
+                    "teacher_email": t_email,
+                    "teacher_name": t_name,
+                    "allow_duplicate_submissions": False,
+                    "created_at": now_iso
+                },
+                {
+                    "subject_name": "Software Engineering",
+                    "subject_code": "CS401",
+                    "description": "Software development life cycle, Agile methodologies, design patterns, UML, and CI/CD pipelines.",
+                    "teacher_id": t_id,
+                    "teacher_email": t_email,
+                    "teacher_name": t_name,
+                    "allow_duplicate_submissions": False,
+                    "created_at": now_iso
+                }
+            ]
+            db.subjects.insert_many(initial_subjects)
+            print(f"[INFO] Seeded {len(initial_subjects)} subjects in MongoDB Atlas.")
+    except Exception as e:
+        print("[WARN] Subject seeding notice:", e)
+
+
+@app.post("/subjects")
+def create_subject(payload: dict):
+    """
+    Teachers can create their own subject repository.
+    Strictly verifies the creator is an active Teacher or Admin.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    teacher_email = str(payload.get("teacher_email", "")).strip().lower()
+    user_role = str(payload.get("user_role", "")).strip().capitalize()
+    subject_name = str(payload.get("subject_name", "")).strip()
+    subject_code = str(payload.get("subject_code", "")).strip().upper()
+    description = str(payload.get("description", "")).strip()
+
+    if not subject_name or not subject_code:
+        raise HTTPException(status_code=400, detail="Subject name and subject code are required.")
+
+    if user_role not in ["Teacher", "Admin"]:
+        raise HTTPException(status_code=403, detail="Only faculty teachers and administrators can create subject repositories.")
+
+    teacher_user = db.users.find_one({"email": teacher_email})
+    if not teacher_user:
+        raise HTTPException(status_code=404, detail="Teacher account not found.")
+
+    if teacher_user.get("status") != "Active" and user_role != "Admin":
+        raise HTTPException(status_code=403, detail="Your teacher account must be active to create subject repositories.")
+
+    existing_sub = db.subjects.find_one({"subject_code": subject_code})
+    if existing_sub:
+        raise HTTPException(status_code=409, detail=f"A subject with code '{subject_code}' already exists ({existing_sub.get('subject_name')}).")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_subject = {
+        "subject_name": subject_name,
+        "subject_code": subject_code,
+        "description": description,
+        "teacher_id": str(teacher_user["_id"]),
+        "teacher_email": teacher_email,
+        "teacher_name": teacher_user.get("full_name", "Professor"),
+        "allow_duplicate_submissions": False,  # Default OFF as strictly required
+        "created_at": now_iso
+    }
+
+    res = db.subjects.insert_one(new_subject)
+    new_subject["_id"] = res.inserted_id
+
+    log_activity(
+        action="SUBJECT_CREATED",
+        user_email=teacher_email,
+        user_name=teacher_user.get("full_name", "Professor"),
+        user_role=user_role,
+        details=f"Created subject repository: {subject_name} ({subject_code})"
+    )
+
+    return {
+        "message": f"Subject repository '{subject_name}' created successfully!",
+        "subject": serialize_subject(new_subject, 0, 0, False)
+    }
+
+
+@app.get("/subjects")
+def get_subjects(
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """
+    Returns subjects based on role:
+    - Admin: All subjects across campus.
+    - Teacher: Only subjects created/owned by that teacher.
+    - Student: All available subjects across campus, with is_enrolled flag.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        return []
+
+    user_email = user_email if isinstance(user_email, str) else None
+    user_role = user_role if isinstance(user_role, str) else None
+
+    seed_initial_subjects(db)
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    enrolled_subject_ids = set()
+    if clean_role == "Student" and clean_email:
+        enrollments = db.enrollments.find({"student_email": clean_email})
+        enrolled_subject_ids = {str(e.get("subject_id")) for e in enrollments}
+
+    query = {}
+    if clean_role == "Teacher":
+        query["teacher_email"] = clean_email
+    elif clean_role == "Admin":
+        query = {}
+    else:
+        query = {}
+
+    subjects_cursor = list(db.subjects.find(query).sort("created_at", -1))
+    results = []
+
+    for sub in subjects_cursor:
+        sub_id_str = str(sub["_id"])
+        enrolled_count = db.enrollments.count_documents({"subject_id": sub_id_str})
+        docs_count = db.documents.count_documents({"subject_id": sub_id_str, "is_deleted": {"$ne": True}})
+        is_enrolled = sub_id_str in enrolled_subject_ids
+
+        results.append(serialize_subject(sub, enrolled_count, docs_count, is_enrolled))
+
+    return results
+
+
+@app.get("/subjects/{subject_id}")
+def get_subject_details(
+    subject_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """
+    Retrieves detailed subject information.
+    Verifies teacher ownership: A teacher cannot view another teacher's private repository.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    try:
+        sub = db.subjects.find_one({"_id": ObjectId(subject_id)})
+    except Exception:
+        sub = db.subjects.find_one({"subject_code": subject_id})
+
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subject repository not found.")
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+    sub_id_str = str(sub["_id"])
+
+    # Teacher Ownership Verification
+    if clean_role == "Teacher" and sub.get("teacher_email", "").lower() != clean_email:
+        raise HTTPException(
+            status_code=403,
+            detail="Access Denied: You are not authorized to view or manage another teacher's subject repository."
+        )
+
+    is_enrolled = False
+    if clean_role == "Student" and clean_email:
+        is_enrolled = bool(db.enrollments.find_one({"student_email": clean_email, "subject_id": sub_id_str}))
+
+    enrolled_count = db.enrollments.count_documents({"subject_id": sub_id_str})
+    docs_count = db.documents.count_documents({"subject_id": sub_id_str, "is_deleted": {"$ne": True}})
+
+    return serialize_subject(sub, enrolled_count, docs_count, is_enrolled)
+
+
+@app.put("/subjects/{subject_id}/duplicate-setting")
+def update_duplicate_setting(subject_id: str, payload: dict):
+    """
+    Teachers can toggle 'Allow Duplicate File Submissions' (ON / OFF).
+    Strictly verifies subject ownership: Only the subject's teacher or admin can modify this.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    user_email = str(payload.get("user_email") or payload.get("teacher_email") or "").strip().lower()
+    user_role = str(payload.get("user_role") or "Teacher").strip().capitalize()
+    allow_duplicates = bool(payload.get("allow_duplicate_submissions", False))
+
+    try:
+        sub = db.subjects.find_one({"_id": ObjectId(subject_id)})
+    except Exception:
+        sub = db.subjects.find_one({"subject_code": subject_id})
+
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subject repository not found.")
+
+    # Ownership Check
+    if user_role != "Admin" and sub.get("teacher_email", "").lower() != user_email:
+        raise HTTPException(
+            status_code=403,
+            detail="Access Denied: You cannot modify duplicate settings for a subject you do not own."
+        )
+
+    db.subjects.update_one(
+        {"_id": sub["_id"]},
+        {"$set": {"allow_duplicate_submissions": allow_duplicates}}
+    )
+
+    state_label = "ENABLED (ON)" if allow_duplicates else "DISABLED (OFF)"
+    log_activity(
+        action="SUBJECT_SETTING_UPDATED",
+        user_email=user_email,
+        user_name=sub.get("teacher_name", "Teacher"),
+        user_role=user_role,
+        details=f"Duplicate submission setting set to {state_label} for {sub.get('subject_name')} ({sub.get('subject_code')})"
+    )
+
+    return {
+        "message": f"Duplicate file submissions are now {state_label} for {sub.get('subject_name')}.",
+        "subject_id": str(sub["_id"]),
+        "allow_duplicate_submissions": allow_duplicates
+    }
+
+
+@app.get("/subjects/{subject_id}/students")
+def get_enrolled_students(
+    subject_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """Returns list of students enrolled in this subject (accessible by subject owner or admin)."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        return []
+
+    try:
+        sub = db.subjects.find_one({"_id": ObjectId(subject_id)})
+    except Exception:
+        sub = db.subjects.find_one({"subject_code": subject_id})
+
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subject repository not found.")
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    if clean_role != "Admin" and sub.get("teacher_email", "").lower() != clean_email:
+        raise HTTPException(status_code=403, detail="Unauthorized to view enrolled students for this subject.")
+
+    sub_id_str = str(sub["_id"])
+    enrollments = list(db.enrollments.find({"subject_id": sub_id_str}).sort("enrolled_at", -1))
+    results = []
+    for e in enrollments:
+        student_user = db.users.find_one({"email": e.get("student_email")}) or {}
+        doc_count = db.documents.count_documents({
+            "subject_id": sub_id_str,
+            "uploaded_by_email": e.get("student_email"),
+            "is_deleted": {"$ne": True}
+        })
+        results.append({
+            "id": str(e["_id"]),
+            "student_name": e.get("student_name") or student_user.get("full_name", "Student"),
+            "student_email": e.get("student_email", ""),
+            "enrolled_at": e.get("enrolled_at", ""),
+            "status": e.get("status", "Enrolled"),
+            "submissions_count": doc_count
+        })
+    return results
+
+
+# =========================================================================
+# Student Course Enrollment Endpoints
+# =========================================================================
+
+@app.post("/subjects/{subject_id}/enroll")
+def enroll_student_in_subject(subject_id: str, payload: dict):
+    """
+    Students enroll in a course/subject.
+    Verifies student role and prevents duplicate enrollments.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    user_email = str(payload.get("user_email") or payload.get("teacher_email") or "").strip().lower()
+    user_role = str(payload.get("user_role") or "Teacher").strip().capitalize()
+
+    if user_role != "Student":
+        raise HTTPException(status_code=403, detail="Only students can enroll in subject repositories.")
+
+    student = db.users.find_one({"email": user_email})
+    if not student:
+        raise HTTPException(status_code=404, detail="Student account not found.")
+
+    try:
+        sub = db.subjects.find_one({"_id": ObjectId(subject_id)})
+    except Exception:
+        sub = db.subjects.find_one({"subject_code": subject_id})
+
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subject repository not found.")
+
+    sub_id_str = str(sub["_id"])
+
+    # Prevent duplicate enrollment in the same subject
+    existing_enrollment = db.enrollments.find_one({
+        "student_email": user_email,
+        "subject_id": sub_id_str
+    })
+    if existing_enrollment:
+        raise HTTPException(status_code=400, detail=f"You are already enrolled in {sub.get('subject_name')} ({sub.get('subject_code')}).")
+
+    enrollment_doc = {
+        "student_id": str(student["_id"]),
+        "student_email": user_email,
+        "student_name": student.get("full_name", "Student"),
+        "subject_id": sub_id_str,
+        "subject_name": sub.get("subject_name", ""),
+        "subject_code": sub.get("subject_code", ""),
+        "enrolled_at": datetime.now(timezone.utc).isoformat(),
+        "status": "Enrolled"
+    }
+
+    res = db.enrollments.insert_one(enrollment_doc)
+
+    log_activity(
+        action="STUDENT_ENROLLED",
+        user_email=user_email,
+        user_name=student.get("full_name", "Student"),
+        user_role="Student",
+        details=f"Enrolled in {sub.get('subject_name')} ({sub.get('subject_code')})"
+    )
+
+    return {
+        "message": f"Successfully enrolled in {sub.get('subject_name')}!",
+        "enrollment_id": str(res.inserted_id),
+        "subject_id": sub_id_str,
+        "subject_name": sub.get("subject_name"),
+        "subject_code": sub.get("subject_code")
+    }
+
+
+@app.get("/students/my-enrollments")
+def get_my_enrollments(user_email: str = Query(...)):
+    """Returns all subjects in which the student is actively enrolled."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        return []
+
+    clean_email = user_email.strip().lower()
+    enrollments = list(db.enrollments.find({"student_email": clean_email}).sort("enrolled_at", -1))
+    results = []
+
+    for e in enrollments:
+        sub_id_str = str(e.get("subject_id", ""))
+        sub = None
+        try:
+            sub = db.subjects.find_one({"_id": ObjectId(sub_id_str)})
+        except Exception:
+            sub = db.subjects.find_one({"subject_code": e.get("subject_code")})
+
+        submissions_count = db.documents.count_documents({
+            "subject_id": sub_id_str,
+            "uploaded_by_email": clean_email,
+            "is_deleted": {"$ne": True}
+        })
+
+        results.append({
+            "enrollment_id": str(e["_id"]),
+            "subject_id": sub_id_str,
+            "subject_name": sub.get("subject_name") if sub else e.get("subject_name", ""),
+            "subject_code": sub.get("subject_code") if sub else e.get("subject_code", ""),
+            "description": sub.get("description", "") if sub else "",
+            "teacher_name": sub.get("teacher_name", "") if sub else "",
+            "allow_duplicate_submissions": bool(sub.get("allow_duplicate_submissions", False)) if sub else False,
+            "enrolled_at": e.get("enrolled_at", ""),
+            "my_submissions_count": submissions_count
+        })
+
+    return results
+
+
 # =========================================================================
 # Documents Endpoints (Active Documents, Upload, Download, Preview)
 # =========================================================================
@@ -448,6 +969,7 @@ def get_user_favorite_set(db, user_email: Optional[str]) -> set:
 def get_documents(
     user_email: Optional[str] = Query(None),
     user_role: Optional[str] = Query(None),
+    subject_id: Optional[str] = Query(None),
     scope: Optional[str] = Query(None),
     category: Optional[str] = Query("All"),
     approval_status: Optional[str] = Query("All")
@@ -455,6 +977,13 @@ def get_documents(
     db = mongo.get_mongo_db()
     if db is None:
         return []
+
+    user_email = user_email if isinstance(user_email, str) else None
+    user_role = user_role if isinstance(user_role, str) else None
+    subject_id = subject_id if isinstance(subject_id, str) else None
+    scope = scope if isinstance(scope, str) else None
+    category = category if isinstance(category, str) else "All"
+    approval_status = approval_status if isinstance(approval_status, str) else "All"
 
     clean_email = (user_email or "").strip().lower()
     clean_role = (user_role or "").strip().capitalize()
@@ -465,6 +994,9 @@ def get_documents(
     # Base query: Exclude documents in the Recycle Bin (is_deleted == True)
     query = {"is_deleted": {"$ne": True}}
 
+    if subject_id and subject_id != "All":
+        query["subject_id"] = subject_id
+
     if is_admin:
         if scope == "pending":
             query["approval_status"] = "Pending"
@@ -474,31 +1006,29 @@ def get_documents(
             query["approval_status"] = "Rejected"
         elif approval_status and approval_status != "All":
             query["approval_status"] = approval_status
-    elif clean_email:
-        # STRICT ROLE-BASED ACCESS CONTROL FOR STUDENTS AND TEACHERS:
-        if scope == "my":
-            # "My Uploaded Documents" strictly shows only files uploaded by the authenticated user
-            query["uploaded_by_email"] = clean_email
-            if approval_status and approval_status != "All":
-                query["approval_status"] = approval_status
-        elif scope == "browse":
-            # "Browse Repository" strictly shows approved documents
-            query["approval_status"] = "Approved"
+    elif clean_role == "Student":
+        # STRICT REQUIREMENT: Students can view only the documents they have personally uploaded!
+        # Never access documents uploaded by other students!
+        query["uploaded_by_email"] = clean_email
+        if approval_status and approval_status != "All":
+            query["approval_status"] = approval_status
+    elif clean_role == "Teacher":
+        # Teachers can view documents submitted to subjects they own or their own uploads
+        teacher_subs = list(db.subjects.find({"teacher_email": clean_email}))
+        teacher_sub_ids = [str(s["_id"]) for s in teacher_subs]
+
+        if subject_id and subject_id != "All":
+            if subject_id not in teacher_sub_ids:
+                return []
+            query["subject_id"] = subject_id
         else:
-            # Default combined: own files (any status) OR approved files from other members
             query["$or"] = [
-                {"uploaded_by_email": clean_email},
-                {"approval_status": "Approved"}
+                {"subject_id": {"$in": teacher_sub_ids}},
+                {"uploaded_by_email": clean_email}
             ]
-            if approval_status and approval_status in ["Pending", "Rejected"]:
-                # Cannot see other users' pending or rejected files
-                query = {
-                    "is_deleted": {"$ne": True},
-                    "uploaded_by_email": clean_email,
-                    "approval_status": approval_status
-                }
-            elif approval_status == "Approved":
-                query["approval_status"] = "Approved"
+
+        if approval_status and approval_status != "All":
+            query["approval_status"] = approval_status
     else:
         return []
 
@@ -514,13 +1044,13 @@ async def upload_document(
     file: UploadFile = File(...),
     uploaded_by_email: str = Form(...),
     uploaded_by_name: str = Form(...),
-    uploaded_by_role: str = Form(...)
+    uploaded_by_role: str = Form(...),
+    subject_id: Optional[str] = Form(None)
 ):
     db = mongo.get_mongo_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database connection unavailable.")
 
-    # REQUIREMENT: Upload option is ONLY for Student and Teacher
     clean_role = uploaded_by_role.strip().capitalize()
     if clean_role == "Admin":
         raise HTTPException(
@@ -528,8 +1058,48 @@ async def upload_document(
             detail="Upload option is reserved only for Students and Teachers. Administrators cannot upload files."
         )
 
+    clean_email = uploaded_by_email.strip().lower()
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="Please select a file to upload.")
+
+    # Validate Subject & Enrollment
+    sub = None
+    sub_id_str = None
+    if subject_id and subject_id.strip():
+        try:
+            sub = db.subjects.find_one({"_id": ObjectId(subject_id.strip())})
+        except Exception:
+            sub = db.subjects.find_one({"subject_code": subject_id.strip()})
+        if not sub:
+            raise HTTPException(status_code=404, detail="Selected subject repository not found.")
+        sub_id_str = str(sub["_id"])
+
+    # Mandatory subject enrollment check for Students
+    if clean_role == "Student":
+        if not sub:
+            raise HTTPException(
+                status_code=400,
+                detail="Subject Required: Please select an enrolled subject repository to submit your document."
+            )
+        # Verify enrollment
+        enrollment = db.enrollments.find_one({
+            "student_email": clean_email,
+            "subject_id": sub_id_str
+        })
+        if not enrollment:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Enrollment Required: You must enroll in '{sub.get('subject_name')}' ({sub.get('subject_code')}) before submitting documents to it."
+            )
+
+    # Teacher Ownership Check
+    if clean_role == "Teacher" and sub:
+        if sub.get("teacher_email", "").lower() != clean_email:
+            raise HTTPException(
+                status_code=403,
+                detail="Access Denied: You cannot submit materials to another teacher's subject repository."
+            )
 
     original_filename = Path(file.filename).name
     extension = Path(original_filename).suffix.lower()
@@ -542,173 +1112,69 @@ async def upload_document(
         )
 
     content = await file.read(MAX_FILE_SIZE + 1)
-
     if not content:
         raise HTTPException(status_code=400, detail="Cannot upload an empty file.")
-
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="File size exceeds the 25 MB limit.")
 
     file_hash = hashlib.sha256(content).hexdigest()
-    clean_email = uploaded_by_email.strip().lower()
 
-    # Extract text content and keywords upfront for deep content deduplication
+    # =========================================================================
+    # SUBJECT-SPECIFIC CONFIGURABLE DUPLICATE DETECTION (SHA-256)
+    # - allow_duplicate_submissions == False (Default OFF): Reject identical SHA-256 within subject
+    # - allow_duplicate_submissions == True (ON): Allow identical file submissions within subject
+    # - Identical files in DIFFERENT subjects are NOT blocked
+    # - Race condition safe via upload_lock
+    # =========================================================================
+    allow_duplicates = bool(sub.get("allow_duplicate_submissions", False)) if sub else False
+
+    if sub and not allow_duplicates:
+        async with upload_lock:
+            duplicate_in_subject = db.documents.find_one({
+                "subject_id": sub_id_str,
+                "sha256_hash": file_hash,
+                "is_deleted": {"$ne": True}
+            })
+            if duplicate_in_subject:
+                existing_fn = duplicate_in_subject.get("original_filename", "existing document")
+                uploader_name = duplicate_in_subject.get("uploaded_by_name", "another student")
+
+                log_activity(
+                    action="DUPLICATE_BLOCKED",
+                    user_email=clean_email,
+                    user_name=uploaded_by_name,
+                    user_role=clean_role,
+                    document_id=str(duplicate_in_subject.get("_id", "")),
+                    document_name=original_filename,
+                    details=f"Blocked duplicate upload with identical SHA-256 hash in subject '{sub.get('subject_name')}'. Matches '{existing_fn}'."
+                )
+
+                raise HTTPException(
+                    status_code=409,
+                    detail="Duplicate file detected! This document has already been submitted to this subject."
+                )
+
+    # Extract text content and keywords upfront
     extracted_text = extractor.extract_text_from_file(content, original_filename)
     keywords = extractor.extract_keywords(extracted_text, original_filename)
-
-    # Compute normalized text (alphanumeric only) and semantic content hash
     norm_text = re.sub(r'[^a-zA-Z0-9]+', '', extracted_text.lower())
     content_hash = hashlib.sha256(norm_text.encode('utf-8')).hexdigest() if len(norm_text) >= 50 else file_hash
 
-    # =========================================================================
-    # MULTI-TIER CONTENT DUPLICATE DETECTION (CROSS-USER & CROSS-FILENAME)
-    # Note: Filenames ARE permitted to repeat across users/documents as long
-    # as the content is different. Only duplicate content is intercepted.
-    # =========================================================================
-
-    # Tier 1: Exact Binary SHA-256 Checksum Matching across all active documents
-    duplicate_binary_doc = db.documents.find_one({
-        "sha256_hash": file_hash,
-        "is_deleted": {"$ne": True}
-    })
-
-    if duplicate_binary_doc:
-        is_same_user = duplicate_binary_doc.get("uploaded_by_email", "").lower() == clean_email
-        existing_filename = duplicate_binary_doc.get("original_filename", "existing document")
-        uploader_name = duplicate_binary_doc.get("uploaded_by_name", "another member")
-
-        if is_same_user:
-            dup_message = f"Duplicate file detected! You have already uploaded this exact file as '{existing_filename}'."
-        else:
-            dup_message = f"Duplicate content detected! An identical file with this SHA-256 checksum is already active in the repository (uploaded by {uploader_name} as '{existing_filename}')."
-
-        log_activity(
-            action="DUPLICATE_BLOCKED",
-            user_email=clean_email,
-            user_name=uploaded_by_name,
-            user_role=clean_role,
-            document_id=str(duplicate_binary_doc.get("_id", "")),
-            document_name=original_filename,
-            details=f"Blocked duplicate upload with identical SHA-256 binary hash. Matches '{existing_filename}'."
-        )
-
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": dup_message,
-                "existing_filename": existing_filename,
-                "uploader": uploader_name,
-                "sha256_hash": file_hash
-            }
-        )
-
-    # Tier 2: Deep Normalized Text Content Hash Matching (catches re-saved docs with different filenames)
-    if len(norm_text) >= 50:
-        duplicate_content_doc = db.documents.find_one({
-            "content_hash": content_hash,
-            "is_deleted": {"$ne": True}
-        })
-
-        if duplicate_content_doc:
-            is_same_user = duplicate_content_doc.get("uploaded_by_email", "").lower() == clean_email
-            existing_filename = duplicate_content_doc.get("original_filename", "existing document")
-            uploader_name = duplicate_content_doc.get("uploaded_by_name", "another member")
-
-            if is_same_user:
-                dup_message = f"Duplicate content detected! You have already uploaded an identical document as '{existing_filename}'."
-            else:
-                dup_message = f"Duplicate content detected! An identical document with the same academic text has already been uploaded by {uploader_name} as '{existing_filename}'. Submitting identical content under a different filename is not permitted."
-
-            log_activity(
-                action="DUPLICATE_BLOCKED",
-                user_email=clean_email,
-                user_name=uploaded_by_name,
-                user_role=clean_role,
-                document_id=str(duplicate_content_doc.get("_id", "")),
-                document_name=original_filename,
-                details=f"Blocked duplicate text content upload. Matches '{existing_filename}'."
-            )
-
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": dup_message,
-                    "existing_filename": existing_filename,
-                    "uploader": uploader_name,
-                    "sha256_hash": file_hash
-                }
-            )
-
-    # Tier 3: Substantial Text Similarity Matching (catches near-duplicates where only name/header was edited)
-    if len(norm_text) >= 100:
-        import difflib
-        active_docs = list(db.documents.find(
-            {"is_deleted": {"$ne": True}, "norm_text": {"$exists": True}},
-            {"_id": 1, "original_filename": 1, "uploaded_by_name": 1, "uploaded_by_email": 1, "norm_text": 1}
-        ))
-        for existing in active_docs:
-            ex_norm = existing.get("norm_text", "")
-            if len(ex_norm) >= 100:
-                len_diff = abs(len(norm_text) - len(ex_norm)) / max(len(norm_text), len(ex_norm))
-                if len_diff > 0.25:
-                    continue
-                matcher = difflib.SequenceMatcher(None, norm_text[:3500], ex_norm[:3500])
-                if matcher.quick_ratio() >= 0.88 and matcher.ratio() >= 0.88:
-                    existing_filename = existing.get("original_filename", "existing document")
-                    uploader_name = existing.get("uploaded_by_name", "another member")
-                    sim_pct = round(matcher.ratio() * 100)
-                    dup_message = f"Duplicate content detected! This document is {sim_pct}% identical in content to '{existing_filename}' uploaded by {uploader_name}. Submitting duplicate course materials under another name is not permitted."
-
-                    log_activity(
-                        action="DUPLICATE_BLOCKED",
-                        user_email=clean_email,
-                        user_name=uploaded_by_name,
-                        user_role=clean_role,
-                        document_id=str(existing.get("_id", "")),
-                        document_name=original_filename,
-                        details=f"Blocked duplicate content ({sim_pct}% identical text to '{existing_filename}')."
-                    )
-
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "message": dup_message,
-                            "existing_filename": existing_filename,
-                            "uploader": uploader_name,
-                            "sha256_hash": file_hash
-                        }
-                    )
-
-    # Tier 4: Check If Matching Content is in the User's Recycle Bin
-    recycle_bin_doc = db.documents.find_one({
+    # Check if this exact file is in user's Recycle Bin for this subject
+    recycle_query = {
         "uploaded_by_email": clean_email,
-        "$or": [
-            {"sha256_hash": file_hash},
-            {"content_hash": content_hash}
-        ],
+        "sha256_hash": file_hash,
         "is_deleted": True
-    })
+    }
+    if sub_id_str:
+        recycle_query["subject_id"] = sub_id_str
 
+    recycle_bin_doc = db.documents.find_one(recycle_query)
     if recycle_bin_doc:
         re_filename = recycle_bin_doc.get("original_filename", original_filename)
-        dup_message = f"Duplicate in Recycle Bin! A document matching this content ('{re_filename}') is currently in your Recycle Bin. Please restore it or permanently purge it from the Recycle Bin before re-uploading."
-        log_activity(
-            action="DUPLICATE_BLOCKED",
-            user_email=clean_email,
-            user_name=uploaded_by_name,
-            user_role=clean_role,
-            document_id=str(recycle_bin_doc.get("_id", "")),
-            document_name=original_filename,
-            details=f"Blocked re-upload of content currently sitting in Recycle Bin ('{re_filename}')."
-        )
         raise HTTPException(
             status_code=409,
-            detail={
-                "message": dup_message,
-                "existing_filename": re_filename,
-                "uploader": uploaded_by_name,
-                "sha256_hash": file_hash
-            }
+            detail=f"Duplicate in Recycle Bin! A document matching this content ('{re_filename}') is currently in your Recycle Bin. Please restore it or permanently purge it from the Recycle Bin before re-uploading."
         )
 
     stored_filename = f"{uuid.uuid4().hex}{extension}"
@@ -716,7 +1182,7 @@ async def upload_document(
     category = CATEGORY_MAP.get(extension, "Uncategorized")
 
     # Initial approval status:
-    # Faculty materials are auto-approved; Student materials enter 'Pending' for campus moderation
+    # Faculty materials are auto-approved; Student materials enter 'Pending' for review
     initial_status = "Approved" if clean_role == "Teacher" else "Pending"
 
     try:
@@ -734,6 +1200,9 @@ async def upload_document(
             "norm_text": norm_text,
             "extracted_text": extracted_text,
             "keywords": keywords,
+            "subject_id": sub_id_str,
+            "subject_name": sub.get("subject_name", "") if sub else "",
+            "subject_code": sub.get("subject_code", "") if sub else "",
             "approval_status": initial_status,
             "rejection_reason": "",
             "download_count": 0,
@@ -750,7 +1219,6 @@ async def upload_document(
 
         res = db.documents.insert_one(doc_data)
 
-        # Log upload activity
         log_activity(
             action="UPLOAD",
             user_email=clean_email,
@@ -758,7 +1226,7 @@ async def upload_document(
             user_role=clean_role,
             document_id=str(res.inserted_id),
             document_name=original_filename,
-            details=f"Uploaded {format_file_size(len(content))} {category} ({initial_status})"
+            details=f"Uploaded to {sub.get('subject_name', 'Repository') if sub else 'Repository'} ({format_file_size(len(content))}, {category})"
         )
 
     except Exception as e:
@@ -773,6 +1241,8 @@ async def upload_document(
         "document_id": str(res.inserted_id),
         "filename": original_filename,
         "category": category,
+        "subject_name": sub.get("subject_name") if sub else "",
+        "subject_code": sub.get("subject_code") if sub else "",
         "file_size": len(content),
         "file_size_formatted": format_file_size(len(content)),
         "approval_status": initial_status,
@@ -804,19 +1274,34 @@ def search_documents(
     if db is None:
         return []
 
+    q = q if isinstance(q, str) else ""
+    author = author if isinstance(author, str) else ""
+    category = category if isinstance(category, str) else "All"
+    date_filter = date_filter if isinstance(date_filter, str) else "All"
+    approval_status = approval_status if isinstance(approval_status, str) else "All"
+    user_email = user_email if isinstance(user_email, str) else None
+    user_role = user_role if isinstance(user_role, str) else None
+
     user_favs = get_user_favorite_set(db, user_email)
 
     # Base query: Exclude deleted documents
     query = {"is_deleted": {"$ne": True}}
 
-    if user_role == "Admin":
+    clean_role = (user_role or "").strip().capitalize()
+    clean_email = (user_email or "").strip().lower()
+
+    if clean_role == "Admin":
         pass
-    elif user_email:
-        clean_email = user_email.strip().lower()
+    elif clean_role == "Teacher":
+        teacher_subs = list(db.subjects.find({"teacher_email": clean_email}))
+        teacher_sub_ids = [str(s["_id"]) for s in teacher_subs]
         query["$or"] = [
-            {"uploaded_by_email": clean_email},
-            {"approval_status": "Approved"}
+            {"subject_id": {"$in": teacher_sub_ids}},
+            {"uploaded_by_email": clean_email}
         ]
+    elif clean_role == "Student" and clean_email:
+        # Students can search only their own documents
+        query["uploaded_by_email"] = clean_email
     else:
         return []
 
@@ -916,21 +1401,15 @@ def preview_document(
     # STRICT ROLE-BASED ACCESS CONTROL CHECK FOR PREVIEW
     clean_email = (user_email or "").strip().lower()
     clean_role = (user_role or "").strip().capitalize()
-    is_admin = clean_role == "Admin"
 
-    if not is_admin:
-        doc_uploader = (doc.get("uploaded_by_email") or "").strip().lower()
-        is_owner = bool(clean_email and doc_uploader == clean_email)
-        is_approved = doc.get("approval_status") == "Approved"
-        is_deleted = doc.get("is_deleted", False)
+    if not check_document_access(doc, clean_email, clean_role, db):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. You do not have permission to view or preview this document."
+        )
 
-        if is_deleted:
-            raise HTTPException(status_code=403, detail="This document has been moved to the Recycle Bin.")
-        if not (is_owner or is_approved):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied. This document is private or awaiting administrative approval."
-            )
+    if doc.get("is_deleted", False) and clean_role != "Admin":
+        raise HTTPException(status_code=403, detail="This document has been moved to the Recycle Bin.")
 
     file_path = Path(doc.get("file_path", ""))
     if not file_path.exists():
@@ -995,7 +1474,8 @@ def preview_document(
 @app.get("/documents/{document_id}/info")
 def get_document_info(
     document_id: str,
-    user_email: Optional[str] = Query(None)
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
 ):
     """Returns comprehensive metadata for the document preview modal."""
     db = mongo.get_mongo_db()
@@ -1010,6 +1490,15 @@ def get_document_info(
 
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    if not check_document_access(doc, clean_email, clean_role, db):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. You do not have permission to view this document's details."
+        )
 
     user_favs = get_user_favorite_set(db, user_email)
     client_doc = serialize_document_for_client(doc, user_favs)
@@ -1045,21 +1534,15 @@ def download_document(
     # STRICT ROLE-BASED ACCESS CONTROL CHECK FOR DOWNLOAD
     clean_email = (user_email or "").strip().lower()
     clean_role = (user_role or "").strip().capitalize()
-    is_admin = clean_role == "Admin"
 
-    if not is_admin:
-        doc_uploader = (doc.get("uploaded_by_email") or "").strip().lower()
-        is_owner = bool(clean_email and doc_uploader == clean_email)
-        is_approved = doc.get("approval_status") == "Approved"
-        is_deleted = doc.get("is_deleted", False)
+    if not check_document_access(doc, clean_email, clean_role, db):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. You do not have permission to download this document."
+        )
 
-        if is_deleted:
-            raise HTTPException(status_code=403, detail="This document has been moved to the Recycle Bin.")
-        if not (is_owner or is_approved):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied. This document is private or awaiting administrative approval."
-            )
+    if doc.get("is_deleted", False) and clean_role != "Admin":
+        raise HTTPException(status_code=403, detail="This document has been moved to the Recycle Bin.")
 
     file_path = Path(doc.get("file_path", ""))
     if not file_path.exists():
@@ -1131,9 +1614,15 @@ def move_document_to_recycle_bin(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    doc_name = doc.get("original_filename", "Document")
     clean_email = (user_email or doc.get("uploaded_by_email", "")).strip().lower()
     clean_name = (user_name or doc.get("uploaded_by_name", "User")).strip()
+    clean_role = (user_role or "").strip().capitalize()
+
+    # RBAC check: Student can only delete own document. Teacher can delete own or subject submission. Admin can delete any.
+    if not check_document_access(doc, clean_email, clean_role, db):
+        raise HTTPException(status_code=403, detail="Unauthorized to delete this document.")
+
+    doc_name = doc.get("original_filename", "Document")
 
     now_iso = datetime.now(timezone.utc).isoformat()
     db.documents.update_one(
@@ -1211,6 +1700,14 @@ def restore_document_from_recycle_bin(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
+    clean_email = (user_email or "user@smartrepo.edu").strip().lower()
+    clean_name = (user_name or "User").strip()
+    clean_role = (user_role or "").strip().capitalize()
+
+    # RBAC check: Student can restore only own document. Teacher can restore own or subject submission. Admin can restore any.
+    if not check_document_access(doc, clean_email, clean_role, db):
+        raise HTTPException(status_code=403, detail="Unauthorized to restore this document.")
+
     doc_name = doc.get("original_filename", "Document")
 
     db.documents.update_one(
@@ -1264,6 +1761,14 @@ def permanently_delete_document(
 
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
+
+    clean_email = (user_email or "admin@smartrepo.edu").strip().lower()
+    clean_name = (user_name or "User").strip()
+    clean_role = (user_role or "").strip().capitalize()
+
+    # RBAC check: Only Admin or the document owner can permanently delete.
+    if clean_role != "Admin" and doc.get("uploaded_by_email", "").strip().lower() != clean_email:
+        raise HTTPException(status_code=403, detail="Unauthorized to permanently delete this document.")
 
     doc_name = doc.get("original_filename", "Document")
 
@@ -1718,11 +2223,28 @@ def get_stats(
     total_teachers = db.users.count_documents({"role": "Teacher"})
     pending_approvals = db.documents.count_documents({"approval_status": "Pending", "is_deleted": {"$ne": True}})
 
-    if user_role == "Admin":
+    clean_role = (user_role or "").strip().capitalize()
+    clean_email = (user_email or "").strip().lower()
+
+    pending_teacher_requests = db.users.count_documents({"role": "Teacher", "status": "Pending"})
+    total_subjects = db.subjects.count_documents({})
+
+    if clean_role == "Admin":
         total_documents = db.documents.count_documents({"is_deleted": {"$ne": True}})
         total_categories = len(db.documents.distinct("category", {"is_deleted": {"$ne": True}}))
-    elif user_email:
-        clean_email = user_email.strip().lower()
+    elif clean_role == "Teacher":
+        teacher_subs = list(db.subjects.find({"teacher_email": clean_email}))
+        teacher_sub_ids = [str(s["_id"]) for s in teacher_subs]
+        t_query = {
+            "is_deleted": {"$ne": True},
+            "$or": [
+                {"subject_id": {"$in": teacher_sub_ids}},
+                {"uploaded_by_email": clean_email}
+            ]
+        }
+        total_documents = db.documents.count_documents(t_query)
+        total_categories = len(db.documents.distinct("category", t_query))
+    elif clean_email:
         total_documents = db.documents.count_documents({"uploaded_by_email": clean_email, "is_deleted": {"$ne": True}})
         total_categories = len(db.documents.distinct("category", {"uploaded_by_email": clean_email, "is_deleted": {"$ne": True}}))
     else:
@@ -1735,7 +2257,129 @@ def get_stats(
         "total_users": total_users,
         "total_students": total_students,
         "total_teachers": total_teachers,
-        "pending_approvals": pending_approvals
+        "pending_approvals": pending_approvals,
+        "pending_teacher_requests": pending_teacher_requests,
+        "total_subjects": total_subjects
+    }
+
+
+# =========================================================================
+# Admin Teacher Approval Endpoints
+# =========================================================================
+
+@app.get("/admin/teacher-requests")
+def get_teacher_requests(admin_email: Optional[str] = Query(None)):
+    """Admin endpoint to retrieve all pending teacher registration requests."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        return []
+
+    pending_teachers = list(db.users.find({"role": "Teacher", "status": "Pending"}).sort("created_at", -1))
+    results = []
+    for t in pending_teachers:
+        user_id_str = str(t["_id"])
+        req = db.teacher_requests.find_one({"user_id": user_id_str}) or {}
+        results.append({
+            "id": user_id_str,
+            "user_id": user_id_str,
+            "full_name": t.get("full_name", ""),
+            "email": t.get("email", ""),
+            "role": "Teacher",
+            "status": "Pending",
+            "requested_at": t.get("created_at") or req.get("requested_at")
+        })
+    return results
+
+
+@app.put("/admin/teacher-requests/{user_id}/approve")
+def approve_teacher_request(user_id: str, payload: Optional[dict] = None):
+    """Admin approves a teacher registration request, activating their teacher privileges."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    try:
+        obj_id = ObjectId(user_id)
+        user = db.users.find_one({"_id": obj_id})
+    except Exception:
+        user = db.users.find_one({"email": user_id})
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Teacher account not found.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    admin_email = payload.get("admin_email", "admin@smartrepo.edu") if payload else "admin@smartrepo.edu"
+    admin_name = payload.get("admin_name", "System Administrator") if payload else "System Administrator"
+
+    db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"status": "Active", "reviewed_at": now_iso, "reviewed_by": admin_email}}
+    )
+
+    db.teacher_requests.update_one(
+        {"user_id": str(user["_id"])},
+        {"$set": {"status": "Approved", "reviewed_at": now_iso, "reviewed_by": admin_email}},
+        upsert=True
+    )
+
+    log_activity(
+        action="TEACHER_APPROVED",
+        user_email=admin_email,
+        user_name=admin_name,
+        user_role="Admin",
+        details=f"Admin approved teacher registration for '{user.get('full_name')}' ({user.get('email')})"
+    )
+
+    return {
+        "message": f"Teacher '{user.get('full_name')}' approved successfully. Account is now active.",
+        "user_id": str(user["_id"]),
+        "status": "Active"
+    }
+
+
+@app.put("/admin/teacher-requests/{user_id}/reject")
+def reject_teacher_request(user_id: str, payload: Optional[dict] = None):
+    """Admin rejects a teacher registration request."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    try:
+        obj_id = ObjectId(user_id)
+        user = db.users.find_one({"_id": obj_id})
+    except Exception:
+        user = db.users.find_one({"email": user_id})
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Teacher account not found.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    admin_email = payload.get("admin_email", "admin@smartrepo.edu") if payload else "admin@smartrepo.edu"
+    admin_name = payload.get("admin_name", "System Administrator") if payload else "System Administrator"
+
+    db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"status": "Rejected", "reviewed_at": now_iso, "reviewed_by": admin_email}}
+    )
+
+    db.teacher_requests.update_one(
+        {"user_id": str(user["_id"])},
+        {"$set": {"status": "Rejected", "reviewed_at": now_iso, "reviewed_by": admin_email}},
+        upsert=True
+    )
+
+    log_activity(
+        action="TEACHER_REJECTED",
+        user_email=admin_email,
+        user_name=admin_name,
+        user_role="Admin",
+        details=f"Admin rejected teacher registration for '{user.get('full_name')}' ({user.get('email')})"
+    )
+
+    return {
+        "message": f"Teacher registration request for '{user.get('full_name')}' has been rejected.",
+        "user_id": str(user["_id"]),
+        "status": "Rejected"
     }
 
 

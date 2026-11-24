@@ -397,6 +397,18 @@ export default function App() {
     my_total_downloads: myDocs.reduce((acc, d) => acc + (d.download_count || 0), 0)
   };
 
+  // Handle navigation with optional params (like subject_id)
+  const [uploadInitialSubjectId, setUploadInitialSubjectId] = useState(null);
+
+  const handleNavigateWithParams = (tab, params = {}) => {
+    if (params?.subject_id) {
+      setUploadInitialSubjectId(params.subject_id);
+    } else {
+      setUploadInitialSubjectId(null);
+    }
+    setCurrentTab(tab);
+  };
+
   // Main View Router based on currentTab
   const renderCurrentView = () => {
     switch (currentTab) {
@@ -406,10 +418,10 @@ export default function App() {
           <TeacherDashboard
             user={user}
             stats={studentStats}
-            recentDocs={recentDocs}
+            recentDocs={myDocs}
             favoriteDocs={favoriteDocs}
             frequentDocs={frequentDocs}
-            onNavigate={setCurrentTab}
+            onNavigate={handleNavigateWithParams}
             onPreview={handlePreview}
             onDownload={handleDownload}
             onToggleFavorite={handleToggleFavorite}
@@ -419,10 +431,10 @@ export default function App() {
           <StudentDashboard
             user={user}
             stats={studentStats}
-            recentDocs={recentDocs}
+            recentDocs={myDocs}
             favoriteDocs={favoriteDocs}
             frequentDocs={frequentDocs}
-            onNavigate={setCurrentTab}
+            onNavigate={handleNavigateWithParams}
             onPreview={handlePreview}
             onDownload={handleDownload}
             onToggleFavorite={handleToggleFavorite}
@@ -444,7 +456,7 @@ export default function App() {
             }}
             recentUploads={allDocs.filter((d) => d.approval_status === "Pending")}
             activityLogs={activityLogs}
-            onNavigate={setCurrentTab}
+            onNavigate={handleNavigateWithParams}
             onPreview={handlePreview}
             onApprove={handleApproveDocument}
             onReject={(doc) => setRejectionModalDoc(doc)}
@@ -514,6 +526,7 @@ export default function App() {
         return (
           <UploadView
             currentUser={user}
+            initialSubjectId={uploadInitialSubjectId}
             onUploadSuccess={(msg) => {
               showToast(msg, "success");
               refreshData();
@@ -523,6 +536,7 @@ export default function App() {
               showToast(errMsg, "error");
             }}
             onCancel={() => setCurrentTab(user.role === "Admin" ? "admin_dashboard" : "dashboard")}
+            onNavigate={handleNavigateWithParams}
           />
         );
 
