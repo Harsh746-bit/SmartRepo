@@ -168,7 +168,7 @@ export default function StudentDashboard({
         <StatsCard
           title="My Submissions"
           value={totalUploaded}
-          subtitle="Total uploaded documents"
+          subtitle="Total submitted assignments"
           icon={FileText}
           colorScheme="blue"
           onClick={() => onNavigate("my_documents")}
@@ -181,20 +181,19 @@ export default function StudentDashboard({
           colorScheme="indigo"
         />
         <StatsCard
-          title="Approved Materials"
+          title="Submitted Documents"
           value={approvedCount}
-          subtitle="Accepted submissions"
+          subtitle="Active & verified in repository"
           icon={CheckCircle2}
           colorScheme="emerald"
           onClick={() => onNavigate("my_documents")}
         />
         <StatsCard
-          title="Pending Moderation"
-          value={pendingCount}
-          subtitle="Under faculty review"
-          icon={Clock3}
-          colorScheme="amber"
-          badge={pendingCount > 0 ? "In Review" : null}
+          title="Published Materials"
+          value={totalUploaded}
+          subtitle="Directly submitted to course"
+          icon={CheckCircle2}
+          colorScheme="teal"
           onClick={() => onNavigate("my_documents")}
         />
       </div>

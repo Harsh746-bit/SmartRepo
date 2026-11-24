@@ -1214,9 +1214,8 @@ async def upload_document(
     file_path = UPLOAD_DIR / stored_filename
     category = CATEGORY_MAP.get(extension, "Uncategorized")
 
-    # Initial approval status:
-    # Faculty materials are auto-approved; Student materials enter 'Pending' for review
-    initial_status = "Approved" if clean_role == "Teacher" else "Pending"
+    # Initial status: Submitted assignments are directly submitted as "Approved" without entering review status
+    initial_status = "Approved"
 
     try:
         file_path.write_bytes(content)

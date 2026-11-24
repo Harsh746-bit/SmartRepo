@@ -210,7 +210,7 @@ export default function UploadView({
           Upload course assignments, lecture notes, or reference materials.
           {currentUser?.role === "Teacher"
             ? " Materials uploaded by faculty to their repositories are auto-approved."
-            : " Student submissions require prior enrollment in the target subject and enter the moderation queue."}
+            : " Student submissions require prior enrollment in the target subject and are directly submitted to the course repository."}
         </p>
       </div>
 
