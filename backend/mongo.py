@@ -13,39 +13,80 @@ DB_NAME = "smartrepo"
 client = None
 db = None
 
-try:
-    client = pymongo.MongoClient(
-        MONGO_URI,
-        serverSelectionTimeoutMS=6000,
-        connectTimeoutMS=6000
-    )
-    # Ping database to verify connection
-    client.admin.command('ping')
-    db = client[DB_NAME]
-    print("[INFO] Successfully connected to MongoDB Atlas database:", DB_NAME)
+def init_db():
+    global client, db
+    try:
+        client = pymongo.MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=6000,
+            connectTimeoutMS=6000
+        )
+        client.admin.command('ping')
+        db = client[DB_NAME]
+        print("[INFO] Successfully connected to MongoDB Atlas database:", DB_NAME)
 
-    # Initialize indexes
-    db.users.create_index("email", unique=True)
-    db.documents.create_index("uploaded_by_email")
-    db.documents.create_index("sha256_hash")
-    db.documents.create_index("subject_id")
-    db.documents.create_index([("subject_id", 1), ("sha256_hash", 1)])
-    db.subjects.create_index("subject_code", unique=True)
-    db.subjects.create_index("teacher_email")
-    db.enrollments.create_index([("student_email", 1), ("subject_id", 1)], unique=True)
-    db.enrollments.create_index("student_email")
-    db.enrollments.create_index("subject_id")
-    db.teacher_requests.create_index("user_id")
-    db.teacher_requests.create_index("status")
-except Exception as e:
-    print("[WARN] MongoDB Atlas connection error:", e)
+        # 1. Users
+        db.users.create_index("email", unique=True)
+        db.users.create_index("role")
+        db.users.create_index("status")
 
+        # 2. Teacher Requests
+        db.teacher_requests.create_index("user_id")
+        db.teacher_requests.create_index("email")
+        db.teacher_requests.create_index("status")
+
+        # 3. Documents
+        db.documents.create_index("uploaded_by_email")
+        db.documents.create_index("sha256_hash")
+        db.documents.create_index("subject_id")
+        db.documents.create_index([("subject_id", 1), ("sha256_hash", 1)])
+        db.documents.create_index("is_faculty_material")
+
+        # 4. Subjects
+        db.subjects.create_index("subject_code", unique=True)
+        db.subjects.create_index("teacher_email")
+        db.subjects.create_index("department")
+
+        # 5. Enrollments
+        db.enrollments.create_index([("student_email", 1), ("subject_id", 1)], unique=True)
+        db.enrollments.create_index("student_email")
+        db.enrollments.create_index("subject_id")
+
+        # 6. Assignments (CampusConnect 2.0)
+        db.assignments.create_index("subject_id")
+        db.assignments.create_index("teacher_email")
+        db.assignments.create_index("status")
+        db.assignments.create_index("deadline")
+
+        # 7. Submissions (CampusConnect 2.0)
+        db.submissions.create_index([("assignment_id", 1), ("student_email", 1)])
+        db.submissions.create_index([("assignment_id", 1), ("sha256_hash", 1)])
+        db.submissions.create_index([("subject_id", 1), ("sha256_hash", 1)])
+        db.submissions.create_index("sha256_hash")
+        db.submissions.create_index("student_email")
+        db.submissions.create_index("verification_status")
+
+        # 8. User RSA Keys (CampusConnect 2.0)
+        db.user_keys.create_index("key_id", unique=True)
+        db.user_keys.create_index([("user_email", 1), ("is_revoked", 1)])
+        db.user_keys.create_index("user_email")
+
+        # 9. Verification Logs & Activity
+        db.verification_logs.create_index("submission_id")
+        db.verification_logs.create_index([("timestamp", -1)])
+        db.favorites.create_index([("user_email", 1), ("document_id", 1)])
+        db.recently_viewed.create_index([("user_email", 1), ("viewed_at", -1)])
+        db.activity_logs.create_index([("timestamp", -1)])
+
+    except Exception as e:
+        print("[WARN] MongoDB Atlas connection error:", e)
+
+init_db()
 
 def get_mongo_db():
     global client, db
     if db is not None:
         return db
-
     try:
         client = pymongo.MongoClient(
             MONGO_URI,
@@ -55,15 +96,6 @@ def get_mongo_db():
             minPoolSize=5
         )
         db = client[DB_NAME]
-        return db
-    except Exception as e:
-        print("[WARN] MongoDB connection error:", e)
-        return None
-        db.teacher_requests.create_index("status")
-        db.favorites.create_index([("user_email", 1), ("document_id", 1)])
-        db.recently_viewed.create_index([("user_email", 1), ("viewed_at", -1)])
-        db.activity_logs.create_index([("timestamp", -1)])
-        print("[INFO] Connected to MongoDB Atlas database:", DB_NAME)
         return db
     except Exception as e:
         print("[WARN] MongoDB Atlas connection error in get_mongo_db():", e)

@@ -10,10 +10,25 @@ import {
   ShieldCheck,
   GraduationCap,
   Sparkles,
-  AlertCircle
+  AlertCircle,
+  KeyRound,
+  Download,
+  Eye,
+  Calendar,
+  Award,
+  Layers,
+  FolderOpen
 } from "lucide-react";
 import StatsCard from "../components/StatsCard";
 import DocumentCard from "../components/DocumentCard";
+import AssignmentSubmissionModal from "../components/AssignmentSubmissionModal";
+import SignatureDetailsModal from "../components/SignatureDetailsModal";
+import {
+  getSavedKeyForUser,
+  generateRSAKeyPair,
+  saveKeyForUser,
+  downloadPrivateKeyFile
+} from "../utils/crypto";
 import { API_BASE } from "../config";
 
 export default function StudentDashboard({
@@ -47,9 +62,31 @@ export default function StudentDashboard({
     }
   });
 
+  // Assignments & Submissions
+  const [courseAssignments, setCourseAssignments] = useState([]);
+  const [mySubmissions, setMySubmissions] = useState([]);
+  const [facultyMaterials, setFacultyMaterials] = useState([]);
+  const [activeSection, setActiveSection] = useState("assignments"); // 'assignments' | 'materials' | 'submissions' | 'subjects'
+
+  // Modals
+  const [submissionModalAssignment, setSubmissionModalAssignment] = useState(null);
+  const [signatureModalSubmission, setSignatureModalSubmission] = useState(null);
+
+  // RSA Key State
+  const [userKey, setUserKey] = useState(null);
+  const [generatingKey, setGeneratingKey] = useState(false);
+  const [keyNotice, setKeyNotice] = useState(null);
+
   const [loadingEnrollments, setLoadingEnrollments] = useState(false);
   const [enrollActionId, setEnrollActionId] = useState(null);
   const [enrollMessage, setEnrollMessage] = useState(null);
+
+  useEffect(() => {
+    if (studentEmail) {
+      const saved = getSavedKeyForUser(studentEmail);
+      if (saved) setUserKey(saved);
+    }
+  }, [studentEmail]);
 
   const fetchStudentData = async () => {
     if (!studentEmail) return;
@@ -60,11 +97,12 @@ export default function StudentDashboard({
         fetch(`${API_BASE}/subjects?user_email=${encodeURIComponent(studentEmail)}&user_role=Student`)
       ]);
 
+      let enrolledList = [];
       if (enrollRes.ok) {
         const enrollData = await enrollRes.json();
-        const list = Array.isArray(enrollData) ? enrollData : [];
-        setEnrolledSubjects(list);
-        sessionStorage.setItem(`enrolled_${studentEmail}`, JSON.stringify(list));
+        enrolledList = Array.isArray(enrollData) ? enrollData : [];
+        setEnrolledSubjects(enrolledList);
+        sessionStorage.setItem(`enrolled_${studentEmail}`, JSON.stringify(enrolledList));
       }
 
       if (subRes.ok) {
@@ -73,8 +111,40 @@ export default function StudentDashboard({
         setAvailableSubjects(list);
         sessionStorage.setItem(`available_subjects_${studentEmail}`, JSON.stringify(list));
       }
+
+      // 2. Fetch Assignments for all enrolled subjects
+      if (enrolledList.length > 0) {
+        const assignPromises = enrolledList.map((s) =>
+          fetch(`${API_BASE}/subjects/${s.subject_id}/assignments?user_email=${encodeURIComponent(studentEmail)}&user_role=Student`)
+            .then((r) => (r.ok ? r.json() : []))
+            .catch(() => [])
+        );
+        const assignResults = await Promise.all(assignPromises);
+        const allAssignments = assignResults.flat();
+        setCourseAssignments(allAssignments);
+
+        // Fetch my submissions for each assignment
+        const subPromises = allAssignments.map((a) =>
+          fetch(`${API_BASE}/assignments/${a.id}/submissions?user_email=${encodeURIComponent(studentEmail)}&user_role=Student`)
+            .then((r) => (r.ok ? r.json() : []))
+            .catch(() => [])
+        );
+        const subResults = await Promise.all(subPromises);
+        setMySubmissions(subResults.flat());
+      }
+
+      // 3. Fetch Faculty Learning Materials (Section 5 requirement)
+      const docRes = await fetch(`${API_BASE}/documents?user_email=${encodeURIComponent(studentEmail)}&user_role=Student`);
+      if (docRes.ok) {
+        const docs = await docRes.json();
+        // Separate faculty materials from own uploads
+        const facultyDocs = docs.filter(
+          (d) => d.uploaded_by_role === "Teacher" || d.uploaded_by_role === "Faculty" || d.is_faculty_material
+        );
+        setFacultyMaterials(facultyDocs);
+      }
     } catch (err) {
-      console.error("Error loading student enrollments:", err);
+      console.error("Error loading student data:", err);
     }
   };
 
@@ -86,7 +156,7 @@ export default function StudentDashboard({
     setEnrollActionId(subjectId);
     setEnrollMessage(null);
 
-    // Optimistically mark as enrolled immediately (0ms feedback)
+    // Optimistically mark as enrolled immediately
     setAvailableSubjects((prev) =>
       prev.map((s) => (s.id === subjectId ? { ...s, is_enrolled: true } : s))
     );
@@ -129,11 +199,34 @@ export default function StudentDashboard({
     }
   };
 
-  // Student upload counts
-  const totalUploaded = stats?.my_total_count ?? recentDocs.length;
-  const approvedCount = stats?.my_approved_count ?? recentDocs.filter(d => d.approval_status === "Approved").length;
-  const pendingCount = stats?.my_pending_count ?? recentDocs.filter(d => d.approval_status === "Pending").length;
-  const rejectedCount = stats?.my_rejected_count ?? recentDocs.filter(d => d.approval_status === "Rejected").length;
+  const handleGenerateRSAKey = async () => {
+    setGeneratingKey(true);
+    setKeyNotice(null);
+    try {
+      const keyData = await generateRSAKeyPair(3072);
+      const res = await fetch(`${API_BASE}/keys/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_email: studentEmail,
+          public_key_pem: keyData.publicKeyPem,
+          key_id: keyData.keyId,
+          algorithm: keyData.algorithm
+        })
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.detail || "Failed to register public key.");
+      }
+      saveKeyForUser(studentEmail, keyData);
+      setUserKey(keyData);
+      setKeyNotice({ type: "success", text: `3072-bit RSA Key Pair generated and registered (Key ID: ${keyData.keyId})!` });
+    } catch (err) {
+      setKeyNotice({ type: "error", text: err.message || "Key generation failed." });
+    } finally {
+      setGeneratingKey(false);
+    }
+  };
 
   return (
     <div className="campus-dashboard-layout">
@@ -142,332 +235,520 @@ export default function StudentDashboard({
         <div className="welcome-banner-text">
           <h2>Welcome back, {studentName}! 👋</h2>
           <p>
-            Your student academic vault is ready. Enroll in your course subjects, submit assignments, and track your document moderation status.
+            Your student academic vault is ready. Access faculty learning materials, submit course assignments with RSA digital signatures, and track cryptographic verification.
           </p>
           <div className="welcome-banner-cta-group">
             <button
               type="button"
               className="banner-cta-btn primary"
-              onClick={() => onNavigate("upload")}
+              onClick={() => setActiveSection("assignments")}
             >
-              <UploadCloud size={16} /> Submit Course Document
+              <FileText size={16} /> View Course Assignments
             </button>
             <button
               type="button"
               className="banner-cta-btn secondary"
-              onClick={() => onNavigate("my_documents")}
+              onClick={() => setActiveSection("materials")}
             >
-              <FileText size={16} /> My Submission History
+              <FolderOpen size={16} /> Faculty Learning Materials
             </button>
           </div>
         </div>
       </div>
 
-      {/* 4 Stat Cards */}
+      {/* RSA Cryptographic Identity Card */}
+      <div
+        style={{
+          background: userKey ? "#f0fdf4" : "#fefce8",
+          border: `1px solid ${userKey ? "#86efac" : "#fef08a"}`,
+          borderRadius: "10px",
+          padding: "16px 20px",
+          marginBottom: "24px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center"
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div style={{ background: userKey ? "#dcfce7" : "#fef9c3", padding: "10px", borderRadius: "8px" }}>
+            <KeyRound size={22} color={userKey ? "#16a34a" : "#ca8a04"} />
+          </div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <strong style={{ fontSize: "0.95rem", color: userKey ? "#166534" : "#854d0e" }}>
+                {userKey ? "RSA Digital Signing Identity (3072-bit)" : "No RSA Signing Key Registered"}
+              </strong>
+              {userKey && (
+                <span style={{ background: "#22c55e", color: "#ffffff", fontSize: "0.7rem", fontWeight: "700", padding: "2px 7px", borderRadius: "10px" }}>
+                  ACTIVE
+                </span>
+              )}
+            </div>
+            <p style={{ margin: "2px 0 0", fontSize: "0.82rem", color: userKey ? "#15803d" : "#a16207" }}>
+              {userKey
+                ? `Key ID: ${userKey.keyId} • Public key registered in MongoDB Atlas. Private key stored safely in your browser.`
+                : "Generate a 3072-bit RSA key pair on your device to cryptographically sign your assignments."}
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: "8px" }}>
+          {userKey ? (
+            <button
+              type="button"
+              onClick={() => downloadPrivateKeyFile(userKey, studentEmail)}
+              className="btn btn-secondary"
+              style={{ fontSize: "0.8rem", padding: "6px 12px", display: "flex", alignItems: "center", gap: "6px", background: "#ffffff" }}
+              title="Download private key PEM backup"
+            >
+              <Download size={14} /> Backup Private Key
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleGenerateRSAKey}
+              disabled={generatingKey}
+              className="btn btn-primary"
+              style={{ fontSize: "0.8rem", padding: "7px 14px", display: "flex", alignItems: "center", gap: "6px" }}
+            >
+              <Sparkles size={14} /> {generatingKey ? "Generating 3072-bit Key..." : "Generate & Register Key"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {keyNotice && (
+        <div className={`auth-alert ${keyNotice.type}`} style={{ marginBottom: "16px" }}>
+          {keyNotice.type === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+          <span>{keyNotice.text}</span>
+        </div>
+      )}
+
+      {/* 4 Stats Grid */}
       <div className="dashboard-stats-grid four-cols">
         <StatsCard
-          title="My Submissions"
-          value={totalUploaded}
-          subtitle="Total submitted assignments"
+          title="Course Assignments"
+          value={courseAssignments.length}
+          subtitle="Assignments across enrolled subjects"
           icon={FileText}
           colorScheme="blue"
-          onClick={() => onNavigate("my_documents")}
+          onClick={() => setActiveSection("assignments")}
+        />
+        <StatsCard
+          title="My Signed Submissions"
+          value={mySubmissions.length}
+          subtitle="Submissions with cryptographic receipts"
+          icon={ShieldCheck}
+          colorScheme="emerald"
+          onClick={() => setActiveSection("submissions")}
+        />
+        <StatsCard
+          title="Faculty Materials"
+          value={facultyMaterials.length}
+          subtitle="Lecture slides & course resources"
+          icon={BookOpen}
+          colorScheme="indigo"
+          onClick={() => setActiveSection("materials")}
         />
         <StatsCard
           title="Enrolled Subjects"
           value={enrolledSubjects.length}
-          subtitle="Active course repositories"
-          icon={BookOpen}
-          colorScheme="indigo"
-        />
-        <StatsCard
-          title="Submitted Documents"
-          value={approvedCount}
-          subtitle="Active & verified in repository"
-          icon={CheckCircle2}
-          colorScheme="emerald"
-          onClick={() => onNavigate("my_documents")}
-        />
-        <StatsCard
-          title="Published Materials"
-          value={totalUploaded}
-          subtitle="Directly submitted to course"
-          icon={CheckCircle2}
+          subtitle="Active academic repositories"
+          icon={GraduationCap}
           colorScheme="teal"
-          onClick={() => onNavigate("my_documents")}
+          onClick={() => setActiveSection("subjects")}
         />
       </div>
 
-      {/* Enrollment Message Alert */}
-      {enrollMessage && (
-        <div
-          className={`auth-alert ${enrollMessage.type}`}
-          style={{
-            marginBottom: "20px",
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            padding: "12px 18px",
-            borderRadius: "8px",
-            background: enrollMessage.type === "success" ? "#ecfdf5" : "#fef2f2",
-            color: enrollMessage.type === "success" ? "#065f46" : "#991b1b",
-            border: `1px solid ${enrollMessage.type === "success" ? "#a7f3d0" : "#fecaca"}`
-          }}
-        >
-          {enrollMessage.type === "success" ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
-          <span>{enrollMessage.text}</span>
+      {/* Main Tab Switcher */}
+      <div style={{ display: "flex", gap: "8px", borderBottom: "1px solid #e2e8f0", margin: "24px 0 20px" }}>
+        {[
+          { key: "assignments", label: `📝 Course Assignments (${courseAssignments.length})` },
+          { key: "materials", label: `📚 Faculty Learning Materials (${facultyMaterials.length})` },
+          { key: "submissions", label: `✅ My Submissions (${mySubmissions.length})` },
+          { key: "subjects", label: `🎓 My Enrolled Subjects (${enrolledSubjects.length})` }
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveSection(tab.key)}
+            style={{
+              padding: "10px 18px",
+              background: "none",
+              border: "none",
+              borderBottom: activeSection === tab.key ? "2.5px solid #2563eb" : "2.5px solid transparent",
+              color: activeSection === tab.key ? "#2563eb" : "#64748b",
+              fontWeight: activeSection === tab.key ? "700" : "500",
+              fontSize: "0.92rem",
+              cursor: "pointer"
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* SECTION A: Course Assignments */}
+      {activeSection === "assignments" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Assignments in Your Enrolled Courses</h3>
+            <span style={{ fontSize: "0.82rem", color: "#64748b" }}>
+              Only enrolled students can submit assignments
+            </span>
+          </div>
+
+          {courseAssignments.length > 0 ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "16px" }}>
+              {courseAssignments.map((assign) => {
+                const submission = mySubmissions.find((s) => s.assignment_id === assign.id);
+                const isOverdue = new Date() > new Date(assign.deadline);
+                return (
+                  <div
+                    key={assign.id}
+                    style={{
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "10px",
+                      padding: "18px",
+                      boxShadow: "0 2px 4px rgba(0,0,0,0.02)",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between"
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                        <span style={{ background: "#eff6ff", color: "#2563eb", padding: "2px 8px", borderRadius: "4px", fontSize: "0.75rem", fontWeight: "700" }}>
+                          {assign.subject_code}
+                        </span>
+                        <span style={{ fontSize: "0.75rem", color: "#64748b", display: "flex", alignItems: "center", gap: "4px" }}>
+                          <Clock3 size={12} /> Deadline: {new Date(assign.deadline).toLocaleDateString()}
+                        </span>
+                      </div>
+
+                      <h4 style={{ margin: "0 0 6px", fontSize: "1.05rem", color: "#0f172a" }}>
+                        {assign.title}
+                      </h4>
+                      <p style={{ margin: "0 0 10px", fontSize: "0.82rem", color: "#64748b", lineHeight: "1.4" }}>
+                        {assign.description || assign.instructions?.substring(0, 100) + "..." || "Course assignment."}
+                      </p>
+
+                      <div style={{ fontSize: "0.8rem", color: "#475569", marginBottom: "14px" }}>
+                        Instructor: <strong>{assign.teacher_name}</strong> • Max: <strong>{assign.max_marks} marks</strong>
+                      </div>
+                    </div>
+
+                    <div style={{ borderTop: "1px solid #f1f5f9", paddingTop: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      {submission ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <CheckCircle2 size={16} color="#16a34a" />
+                          <span style={{ fontSize: "0.82rem", color: "#166534", fontWeight: "600" }}>
+                            Submitted {submission.marks !== null ? `(${submission.marks}/${assign.max_marks} pts)` : ""}
+                          </span>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: "0.8rem", color: isOverdue ? "#dc2626" : "#d97706", fontWeight: "600" }}>
+                          {isOverdue ? "Deadline Passed" : "Pending Submission"}
+                        </span>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (submission) {
+                            setSignatureModalSubmission(submission);
+                          } else {
+                            setSubmissionModalAssignment(assign);
+                          }
+                        }}
+                        style={{
+                          padding: "6px 14px",
+                          borderRadius: "6px",
+                          fontSize: "0.8rem",
+                          fontWeight: "600",
+                          border: "none",
+                          cursor: "pointer",
+                          background: submission ? "#f1f5f9" : "#2563eb",
+                          color: submission ? "#1e293b" : "#ffffff",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "5px"
+                        }}
+                      >
+                        {submission ? (
+                          <>
+                            <ShieldCheck size={14} color="#059669" />
+                            <span>View Receipt</span>
+                          </>
+                        ) : (
+                          <>
+                            <UploadCloud size={14} />
+                            <span>Submit & Sign</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty-sub-card">
+              <FileText size={32} className="empty-icon" />
+              <p>No active assignments in your enrolled courses yet.</p>
+            </div>
+          )}
         </div>
       )}
 
-      {/* SECTION 1: My Enrolled Subjects */}
-      <div className="dashboard-full-section" style={{ marginBottom: "28px" }}>
-        <div className="section-header-row">
-          <div className="section-title-wrapper">
-            <BookOpen size={18} className="section-icon indigo" />
-            <h3>My Enrolled Subjects</h3>
+      {/* SECTION B: Faculty Learning Materials (Section 5 requirement) */}
+      {activeSection === "materials" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>Faculty Learning Materials & Lecture Slides</h3>
+              <p style={{ margin: "2px 0 0", fontSize: "0.82rem", color: "#64748b" }}>
+                Official course presentations, syllabi, and reference resources uploaded by your course instructors
+              </p>
+            </div>
           </div>
-          <span style={{ fontSize: "0.85rem", color: "#64748b" }}>
-            {enrolledSubjects.length} {enrolledSubjects.length === 1 ? "Subject" : "Subjects"} Enrolled
-          </span>
+
+          {facultyMaterials.length > 0 ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "16px" }}>
+              {facultyMaterials.map((doc) => (
+                <DocumentCard
+                  key={doc.id}
+                  doc={doc}
+                  onPreview={() => onPreview(doc)}
+                  onDownload={() => onDownload(doc)}
+                  onToggleFavorite={() => onToggleFavorite(doc.id)}
+                  showDelete={false}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="empty-sub-card">
+              <BookOpen size={32} className="empty-icon" />
+              <p>No faculty learning materials uploaded for your enrolled subjects yet.</p>
+            </div>
+          )}
         </div>
+      )}
 
-        {enrolledSubjects.length > 0 ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "16px" }}>
-            {enrolledSubjects.map((sub) => (
-              <div
-                key={sub.subject_id}
-                style={{
-                  background: "#ffffff",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "10px",
-                  padding: "18px",
-                  boxShadow: "0 2px 6px rgba(0,0,0,0.03)",
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "space-between"
-                }}
-              >
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                    <span style={{ fontSize: "0.75rem", fontWeight: "700", background: "#e0e7ff", color: "#3730a3", padding: "3px 8px", borderRadius: "4px" }}>
-                      {sub.subject_code}
-                    </span>
-                    <span style={{ fontSize: "0.75rem", color: "#10b981", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <CheckCircle2 size={13} /> Enrolled
-                    </span>
-                  </div>
-                  <h4 style={{ margin: "0 0 6px 0", fontSize: "1.05rem", color: "#1e293b", fontWeight: "600" }}>
-                    {sub.subject_name}
-                  </h4>
-                  <p style={{ margin: "0 0 10px 0", fontSize: "0.82rem", color: "#64748b", lineHeight: "1.4" }}>
-                    {sub.description || "Course repository for lecture notes and assignments."}
-                  </p>
-                  <div style={{ fontSize: "0.8rem", color: "#475569", marginBottom: "14px" }}>
-                    Instructor: <strong>{sub.teacher_name || "Faculty Member"}</strong>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid #f1f5f9", paddingTop: "12px" }}>
-                  <span style={{ fontSize: "0.8rem", color: "#64748b" }}>
-                    My Submissions: <strong>{sub.my_submissions_count || 0}</strong>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate("upload", { subject_id: sub.subject_id })}
-                    style={{
-                      background: "#2563eb",
-                      color: "#ffffff",
-                      border: "none",
-                      padding: "6px 12px",
-                      borderRadius: "6px",
-                      fontSize: "0.8rem",
-                      fontWeight: "600",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "4px"
-                    }}
-                  >
-                    Submit <ArrowRight size={13} />
-                  </button>
-                </div>
-              </div>
-            ))}
+      {/* SECTION C: My Signed Submissions */}
+      {activeSection === "submissions" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>My Signed Submissions & Cryptographic Proofs</h3>
+            <span style={{ fontSize: "0.82rem", color: "#64748b" }}>
+              Every submission contains a verifiable 3072-bit RSA digital signature
+            </span>
           </div>
-        ) : (
-          <div className="empty-sub-card">
-            <BookOpen size={28} className="empty-icon" />
-            <p>You haven't enrolled in any subjects yet. Enroll in courses below to start submitting assignments.</p>
-          </div>
-        )}
-      </div>
 
-      {/* SECTION 2: Course Repositories Catalog & Enrollment */}
-      <div className="dashboard-full-section" style={{ marginBottom: "28px" }}>
-        <div className="section-header-row">
-          <div className="section-title-wrapper">
-            <GraduationCap size={18} className="section-icon blue" />
-            <h3>Available Campus Course Repositories</h3>
-          </div>
-          <span style={{ fontSize: "0.85rem", color: "#64748b" }}>
-            Enroll in subjects to unlock document submission
-          </span>
-        </div>
-
-        {availableSubjects.length > 0 ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "16px" }}>
-            {availableSubjects.map((sub) => {
-              const isEnrolled = sub.is_enrolled || enrolledSubjects.some(e => e.subject_id === sub.id);
-              const isEnrolling = enrollActionId === sub.id;
-
-              return (
+          {mySubmissions.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {mySubmissions.map((sub) => (
                 <div
                   key={sub.id}
                   style={{
                     background: "#ffffff",
-                    border: isEnrolled ? "1px solid #bbf7d0" : "1px solid #e2e8f0",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "8px",
+                    padding: "16px 20px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center"
+                  }}
+                >
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                      <strong style={{ fontSize: "1rem", color: "#0f172a" }}>{sub.assignment_title}</strong>
+                      <span style={{ fontSize: "0.75rem", background: "#f1f5f9", color: "#475569", padding: "2px 6px", borderRadius: "4px" }}>
+                        {sub.subject_code}
+                      </span>
+                      {sub.is_late && (
+                        <span style={{ fontSize: "0.72rem", background: "#fef3c7", color: "#92400e", padding: "2px 6px", borderRadius: "4px", fontWeight: "700" }}>
+                          LATE
+                        </span>
+                      )}
+                    </div>
+                    <span style={{ fontSize: "0.82rem", color: "#64748b" }}>
+                      File: <strong>{sub.original_filename}</strong> ({sub.file_size_formatted}) • Submitted: {new Date(sub.submitted_at).toLocaleDateString()}
+                    </span>
+                    {sub.marks !== null && (
+                      <div style={{ marginTop: "4px", fontSize: "0.84rem", color: "#059669", fontWeight: "600" }}>
+                        Score: {sub.marks} / {sub.max_marks} marks {sub.feedback ? `— Feedback: "${sub.feedback}"` : ""}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <span
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: "14px",
+                        fontSize: "0.76rem",
+                        fontWeight: "700",
+                        background: sub.verification_status === "VALID" ? "#d1fae5" : "#f1f5f9",
+                        color: sub.verification_status === "VALID" ? "#065f46" : "#475569"
+                      }}
+                    >
+                      {sub.verification_status === "VALID" ? "✓ Signature Verified" : sub.verification_status}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={() => setSignatureModalSubmission(sub)}
+                      className="btn btn-secondary"
+                      style={{ fontSize: "0.8rem", padding: "5px 10px", display: "flex", alignItems: "center", gap: "4px" }}
+                    >
+                      <ShieldCheck size={14} color="#2563eb" />
+                      <span>Verify & Receipt</span>
+                    </button>
+
+                    <a
+                      href={`${API_BASE}/submissions/${sub.id}/receipt?format=pdf`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-secondary"
+                      style={{ fontSize: "0.8rem", padding: "5px 10px", display: "flex", alignItems: "center", gap: "4px", color: "#059669" }}
+                      title="Download Official Verification Certificate"
+                    >
+                      <Download size={14} />
+                      <span>PDF</span>
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-sub-card">
+              <ShieldCheck size={32} className="empty-icon" />
+              <p>You haven't submitted any signed assignments yet.</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* SECTION D: My Enrolled Subjects & Course Catalog */}
+      {activeSection === "subjects" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {/* Enrolled Subjects */}
+          <div>
+            <h3 style={{ margin: "0 0 14px", fontSize: "1.1rem", color: "#1e293b" }}>My Enrolled Courses</h3>
+            {enrolledSubjects.length > 0 ? (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "16px" }}>
+                {enrolledSubjects.map((sub) => (
+                  <div
+                    key={sub.subject_id}
+                    style={{
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "10px",
+                      padding: "18px",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between"
+                    }}
+                  >
+                    <div>
+                      <span style={{ fontSize: "0.75rem", fontWeight: "700", background: "#e0e7ff", color: "#3730a3", padding: "3px 8px", borderRadius: "4px" }}>
+                        {sub.subject_code}
+                      </span>
+                      <h4 style={{ margin: "8px 0 4px", fontSize: "1.05rem", color: "#1e293b" }}>{sub.subject_name}</h4>
+                      <p style={{ margin: "0 0 8px", fontSize: "0.82rem", color: "#64748b" }}>{sub.description}</p>
+                      <span style={{ fontSize: "0.8rem", color: "#475569" }}>Instructor: {sub.teacher_name}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-sub-card">
+                <BookOpen size={28} className="empty-icon" />
+                <p>You haven't enrolled in any subjects yet. Enroll below to access learning materials and assignments.</p>
+              </div>
+            )}
+          </div>
+
+          {/* Available Courses Catalog */}
+          <div>
+            <h3 style={{ margin: "0 0 14px", fontSize: "1.1rem", color: "#1e293b" }}>Available Course Catalog</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "16px" }}>
+              {availableSubjects.map((sub) => (
+                <div
+                  key={sub.id}
+                  style={{
+                    background: "#ffffff",
+                    border: "1px solid #e2e8f0",
                     borderRadius: "10px",
                     padding: "18px",
-                    boxShadow: "0 2px 6px rgba(0,0,0,0.03)",
                     display: "flex",
                     flexDirection: "column",
                     justifyContent: "space-between"
                   }}
                 >
                   <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                      <span style={{ fontSize: "0.75rem", fontWeight: "700", background: "#f1f5f9", color: "#334155", padding: "3px 8px", borderRadius: "4px" }}>
-                        {sub.subject_code}
-                      </span>
-                      {sub.allow_duplicate_submissions ? (
-                        <span style={{ fontSize: "0.7rem", color: "#d97706", background: "#fef3c7", padding: "2px 6px", borderRadius: "4px" }}>
-                          Duplicates Allowed
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: "0.7rem", color: "#059669", background: "#d1fae5", padding: "2px 6px", borderRadius: "4px" }}>
-                          Deduplication Active
-                        </span>
-                      )}
-                    </div>
-                    <h4 style={{ margin: "0 0 6px 0", fontSize: "1.02rem", color: "#1e293b", fontWeight: "600" }}>
-                      {sub.subject_name}
-                    </h4>
-                    <p style={{ margin: "0 0 10px 0", fontSize: "0.82rem", color: "#64748b", lineHeight: "1.4" }}>
-                      {sub.description || "Official course document repository."}
-                    </p>
-                    <div style={{ fontSize: "0.8rem", color: "#475569", marginBottom: "12px" }}>
-                      Faculty: <strong>{sub.teacher_name || "Faculty Member"}</strong>
-                    </div>
+                    <span style={{ fontSize: "0.75rem", fontWeight: "700", background: "#f1f5f9", color: "#475569", padding: "3px 8px", borderRadius: "4px" }}>
+                      {sub.subject_code}
+                    </span>
+                    <h4 style={{ margin: "8px 0 4px", fontSize: "1.05rem", color: "#1e293b" }}>{sub.subject_name}</h4>
+                    <p style={{ margin: "0 0 8px", fontSize: "0.82rem", color: "#64748b" }}>{sub.description}</p>
+                    <span style={{ fontSize: "0.8rem", color: "#475569" }}>Instructor: {sub.teacher_name}</span>
                   </div>
 
-                  <div style={{ borderTop: "1px solid #f1f5f9", paddingTop: "12px" }}>
-                    {isEnrolled ? (
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <span style={{ fontSize: "0.82rem", color: "#10b981", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
-                          <CheckCircle2 size={15} /> Currently Enrolled
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => onNavigate("upload", { subject_id: sub.id })}
-                          style={{
-                            background: "#f1f5f9",
-                            color: "#1e293b",
-                            border: "1px solid #cbd5e1",
-                            padding: "5px 10px",
-                            borderRadius: "6px",
-                            fontSize: "0.78rem",
-                            fontWeight: "600",
-                            cursor: "pointer"
-                          }}
-                        >
-                          Submit File
-                        </button>
-                      </div>
+                  <div style={{ marginTop: "14px", borderTop: "1px solid #f1f5f9", paddingTop: "10px" }}>
+                    {sub.is_enrolled ? (
+                      <span style={{ fontSize: "0.82rem", color: "#16a34a", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
+                        <CheckCircle2 size={14} /> Already Enrolled
+                      </span>
                     ) : (
                       <button
                         type="button"
                         onClick={() => handleEnroll(sub.id, sub.subject_name)}
-                        disabled={isEnrolling}
-                        style={{
-                          width: "100%",
-                          background: "#2563eb",
-                          color: "#ffffff",
-                          border: "none",
-                          padding: "8px 14px",
-                          borderRadius: "6px",
-                          fontSize: "0.85rem",
-                          fontWeight: "600",
-                          cursor: isEnrolling ? "not-allowed" : "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: "6px"
-                        }}
+                        disabled={enrollActionId === sub.id}
+                        className="btn btn-primary"
+                        style={{ width: "100%", fontSize: "0.82rem", padding: "6px" }}
                       >
-                        {isEnrolling ? "Enrolling..." : (
-                          <>
-                            <BookOpen size={15} /> Enroll in Subject
-                          </>
-                        )}
+                        {enrollActionId === sub.id ? "Enrolling..." : "Enroll in Course"}
                       </button>
                     )}
                   </div>
                 </div>
-              );
-            })}
+              ))}
+            </div>
           </div>
-        ) : (
-          <div className="empty-sub-card">
-            <GraduationCap size={28} className="empty-icon" />
-            <p>No course repositories found on campus at this time.</p>
-          </div>
-        )}
-      </div>
-
-      {/* SECTION 3: My Uploaded Documents (Strict Privacy - Only Student's Own Submissions) */}
-      <div className="dashboard-full-section">
-        <div className="section-header-row">
-          <div className="section-title-wrapper">
-            <FileText size={18} className="section-icon blue" />
-            <h3>My Submission History</h3>
-          </div>
-          <button
-            type="button"
-            className="section-link-btn"
-            onClick={() => onNavigate("my_documents")}
-          >
-            View All ({recentDocs.length}) <ArrowRight size={14} />
-          </button>
         </div>
+      )}
 
-        {recentDocs && recentDocs.length > 0 ? (
-          <div className="dashboard-cards-grid">
-            {recentDocs.slice(0, 6).map((doc) => (
-              <DocumentCard
-                key={doc.id}
-                doc={doc}
-                onPreview={onPreview}
-                onDownload={onDownload}
-                onToggleFavorite={onToggleFavorite}
-                onDelete={onDelete}
-                currentUser={user}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="empty-sub-card">
-            <FileText size={28} className="empty-icon" />
-            <p>You haven't submitted any documents yet. Enroll in a course above and submit your first document.</p>
-            <button
-              type="button"
-              className="btn-sub-action"
-              onClick={() => onNavigate("upload")}
-            >
-              Upload Document
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Assignment Submission Modal */}
+      {submissionModalAssignment && (
+        <AssignmentSubmissionModal
+          isOpen={Boolean(submissionModalAssignment)}
+          assignment={submissionModalAssignment}
+          currentUser={user}
+          onClose={() => setSubmissionModalAssignment(null)}
+          onSubmissionSuccess={(newSub) => {
+            setMySubmissions((prev) => [newSub, ...prev]);
+            setActiveSection("submissions");
+          }}
+        />
+      )}
+
+      {/* Signature Details Modal */}
+      {signatureModalSubmission && (
+        <SignatureDetailsModal
+          isOpen={Boolean(signatureModalSubmission)}
+          submission={signatureModalSubmission}
+          currentUser={user}
+          onClose={() => setSignatureModalSubmission(null)}
+          onReverified={(data) => {
+            setMySubmissions((prev) =>
+              prev.map((s) => (s.id === data.submission_id ? { ...s, ...data } : s))
+            );
+          }}
+        />
+      )}
     </div>
   );
 }

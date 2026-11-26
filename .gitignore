@@ -29,6 +29,8 @@ backend/smartrepo.db
 smartrepo.db
 backend/uploads/*
 !backend/uploads/.gitkeep
+backend/keys/*.pem
+!backend/keys/.gitkeep
 
 # Environment & Secrets
 .env

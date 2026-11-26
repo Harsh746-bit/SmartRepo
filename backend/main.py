@@ -14,11 +14,12 @@ from bson import ObjectId
 from fastapi import (
     FastAPI, Depends, UploadFile, File, Form, HTTPException, Query, status, Request
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 import mongo
 import extractor
+import crypto_utils
 
 upload_lock = asyncio.Lock()
 
@@ -243,6 +244,8 @@ def register_user(user_data: dict):
     email = str(user_data.get("email", "")).strip().lower()
     password = str(user_data.get("password", ""))
     role_input = str(user_data.get("role", "Student")).strip()
+    department = str(user_data.get("department", "General")).strip()
+    employee_id = str(user_data.get("employee_id", "")).strip()
 
     role_map = {"student": "Student", "teacher": "Teacher", "faculty": "Teacher", "admin": "Admin"}
     role = role_map.get(role_input.lower(), "Student")
@@ -281,6 +284,8 @@ def register_user(user_data: dict):
         "password_hash": hash_password(password),
         "role": role,
         "status": initial_status,
+        "department": department,
+        "employee_id": employee_id,
         "created_at": now_iso
     }
 
@@ -294,6 +299,8 @@ def register_user(user_data: dict):
             "user_id": user_id_str,
             "full_name": full_name,
             "email": email,
+            "department": department,
+            "employee_id": employee_id,
             "status": "Pending",
             "requested_at": now_iso,
             "reviewed_at": None,
@@ -542,6 +549,8 @@ def serialize_subject(sub: dict, enrolled_count: int = 0, docs_count: int = 0, i
         "subject_name": sub.get("subject_name", ""),
         "subject_code": sub.get("subject_code", ""),
         "description": sub.get("description", ""),
+        "department": sub.get("department", "Computer Science"),
+        "status": sub.get("status", "Active"),
         "teacher_id": str(sub.get("teacher_id", "")),
         "teacher_email": sub.get("teacher_email", ""),
         "teacher_name": sub.get("teacher_name", ""),
@@ -662,14 +671,18 @@ def create_subject(payload: dict):
         raise HTTPException(status_code=409, detail=f"A subject with code '{subject_code}' already exists ({existing_sub.get('subject_name')}).")
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    dept = str(payload.get("department", "Computer Science")).strip()
+    allow_dup = bool(payload.get("allow_duplicate_submissions", False))
     new_subject = {
         "subject_name": subject_name,
         "subject_code": subject_code,
         "description": description,
+        "department": dept,
+        "status": "Active",
         "teacher_id": str(teacher_user["_id"]),
         "teacher_email": teacher_email,
         "teacher_name": teacher_user.get("full_name", "Professor"),
-        "allow_duplicate_submissions": False,  # Default OFF as strictly required
+        "allow_duplicate_submissions": allow_dup,
         "created_at": now_iso
     }
 
@@ -1230,7 +1243,7 @@ async def upload_document(
 
                 raise HTTPException(
                     status_code=409,
-                    detail="Duplicate file detected! This document has already been submitted to this subject."
+                    detail="Duplicate file detected! Duplicate File Detected! This document has already been submitted with identical content. Changing the filename does not make it a new document."
                 )
 
     # Extract text content and keywords upfront
@@ -2397,6 +2410,8 @@ def get_teacher_requests(admin_email: Optional[str] = Query(None)):
             "user_id": user_id_str,
             "full_name": t.get("full_name", ""),
             "email": t.get("email", ""),
+            "department": t.get("department", req.get("department", "Computer Science")),
+            "employee_id": t.get("employee_id", req.get("employee_id", "N/A")),
             "role": "Teacher",
             "status": "Pending",
             "requested_at": t.get("created_at") or req.get("requested_at")
@@ -2753,3 +2768,1252 @@ def delete_user(user_id: str):
         "message": f"User account '{user_name}' has been deleted from MongoDB.",
         "id": user_id
     }
+
+
+# =========================================================================
+# CAMPUSCONNECT 2.0: SUBJECT MANAGEMENT EXTENSIONS
+# =========================================================================
+
+@app.put("/subjects/{subject_id}")
+def update_subject(subject_id: str, payload: dict):
+    """Teachers can edit their own subjects; Admins can edit any subject."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    user_email = str(payload.get("user_email", "")).strip().lower()
+    user_role = str(payload.get("user_role", "")).strip().capitalize()
+
+    try:
+        sub = db.subjects.find_one({"_id": ObjectId(subject_id)})
+    except Exception:
+        sub = db.subjects.find_one({"subject_code": subject_id})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subject not found.")
+
+    if user_role != "Admin" and sub.get("teacher_email", "").lower() != user_email:
+        raise HTTPException(status_code=403, detail="You do not have permission to edit this subject.")
+
+    update_fields = {}
+    if "subject_name" in payload and payload["subject_name"].strip():
+        update_fields["subject_name"] = payload["subject_name"].strip()
+    if "description" in payload:
+        update_fields["description"] = payload["description"].strip()
+    if "department" in payload and payload["department"].strip():
+        update_fields["department"] = payload["department"].strip()
+    if "allow_duplicate_submissions" in payload:
+        update_fields["allow_duplicate_submissions"] = bool(payload["allow_duplicate_submissions"])
+
+    if update_fields:
+        db.subjects.update_one({"_id": sub["_id"]}, {"$set": update_fields})
+
+    updated = db.subjects.find_one({"_id": sub["_id"]})
+    return {
+        "message": f"Subject '{updated.get('subject_name')}' updated successfully.",
+        "subject": serialize_subject(updated)
+    }
+
+
+@app.delete("/subjects/{subject_id}")
+def delete_subject(
+    subject_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """Safe subject deletion by owner Teacher or Admin."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    try:
+        sub = db.subjects.find_one({"_id": ObjectId(subject_id)})
+    except Exception:
+        sub = db.subjects.find_one({"subject_code": subject_id})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subject not found.")
+
+    if clean_role != "Admin" and sub.get("teacher_email", "").lower() != clean_email:
+        raise HTTPException(status_code=403, detail="You do not have permission to delete this subject.")
+
+    sub_id_str = str(sub["_id"])
+    db.subjects.delete_one({"_id": sub["_id"]})
+    db.enrollments.delete_many({"subject_id": sub_id_str})
+    db.assignments.delete_many({"subject_id": sub_id_str})
+
+    log_activity(
+        action="SUBJECT_DELETED",
+        user_email=clean_email,
+        user_name=sub.get("teacher_name", "Teacher"),
+        user_role=clean_role,
+        details=f"Deleted subject repository: {sub.get('subject_name')} ({sub.get('subject_code')})"
+    )
+
+    return {"message": f"Subject '{sub.get('subject_name')}' deleted successfully."}
+
+
+# =========================================================================
+# CAMPUSCONNECT 2.0: TEACHER APPROVAL WORKFLOW ALIASES
+# =========================================================================
+
+@app.get("/admin/teachers/pending")
+def get_pending_teachers_alias(admin_email: Optional[str] = Query(None)):
+    """Alias for retrieving pending teacher approval requests."""
+    return get_teacher_requests(admin_email)
+
+
+@app.post("/admin/teachers/{user_id}/approve")
+def approve_teacher_post_alias(user_id: str, payload: Optional[dict] = None):
+    """POST alias to approve a pending teacher registration."""
+    return approve_teacher_request(user_id, payload)
+
+
+@app.post("/admin/teachers/{user_id}/reject")
+def reject_teacher_post_alias(user_id: str, payload: Optional[dict] = None):
+    """POST alias to reject a pending teacher registration."""
+    return reject_teacher_request(user_id, payload)
+
+
+# =========================================================================
+# CAMPUSCONNECT 2.0: ASSIGNMENT SERIALIZERS & HELPERS
+# =========================================================================
+
+def serialize_assignment(assign: dict) -> dict:
+    if not assign:
+        return {}
+    return {
+        "id": str(assign["_id"]),
+        "subject_id": str(assign.get("subject_id", "")),
+        "subject_code": assign.get("subject_code", ""),
+        "subject_name": assign.get("subject_name", ""),
+        "title": assign.get("title", ""),
+        "description": assign.get("description", ""),
+        "instructions": assign.get("instructions", ""),
+        "teacher_id": str(assign.get("teacher_id", "")),
+        "teacher_name": assign.get("teacher_name", ""),
+        "teacher_email": assign.get("teacher_email", ""),
+        "max_marks": assign.get("max_marks", 100),
+        "start_date": assign.get("start_date", ""),
+        "deadline": assign.get("deadline", ""),
+        "allowed_formats": assign.get("allowed_formats", [".pdf", ".docx", ".txt"]),
+        "max_file_size": assign.get("max_file_size", 25 * 1024 * 1024),
+        "max_file_size_formatted": format_file_size(assign.get("max_file_size", 25 * 1024 * 1024)),
+        "allow_late_submissions": bool(assign.get("allow_late_submissions", True)),
+        "allow_duplicate_submissions": bool(assign.get("allow_duplicate_submissions", False)),
+        "status": assign.get("status", "Published"),
+        "attachment_filename": assign.get("attachment_filename"),
+        "created_at": assign.get("created_at", "")
+    }
+
+
+def serialize_submission(sub: dict) -> dict:
+    if not sub:
+        return {}
+    file_sz = sub.get("file_size", 0)
+    return {
+        "id": str(sub["_id"]),
+        "assignment_id": str(sub.get("assignment_id", "")),
+        "subject_id": str(sub.get("subject_id", "")),
+        "subject_code": sub.get("subject_code", ""),
+        "subject_name": sub.get("subject_name", ""),
+        "assignment_title": sub.get("assignment_title", ""),
+        "student_id": str(sub.get("student_id", "")),
+        "student_name": sub.get("student_name", ""),
+        "student_email": sub.get("student_email", ""),
+        "filename": sub.get("filename", ""),
+        "original_filename": sub.get("original_filename", ""),
+        "file_size": file_sz,
+        "file_size_formatted": format_file_size(file_sz),
+        "sha256_hash": sub.get("sha256_hash", ""),
+        "digital_signature": sub.get("digital_signature", ""),
+        "signature_algorithm": sub.get("signature_algorithm", "RSA-PSS-SHA256"),
+        "public_key_id": sub.get("public_key_id", ""),
+        "submitted_at": sub.get("submitted_at", ""),
+        "is_late": bool(sub.get("is_late", False)),
+        "verification_status": sub.get("verification_status", "UNVERIFIED"),
+        "verification_reason": sub.get("verification_reason", ""),
+        "last_verified_at": sub.get("last_verified_at", ""),
+        "marks": sub.get("marks"),
+        "max_marks": sub.get("max_marks", 100),
+        "feedback": sub.get("feedback", ""),
+        "evaluated_by": sub.get("evaluated_by"),
+        "evaluated_at": sub.get("evaluated_at"),
+        "receipt_signature": sub.get("receipt_signature", ""),
+        "is_duplicate": bool(sub.get("is_duplicate", False)),
+        "duplicate_of_submission_id": sub.get("duplicate_of_submission_id")
+    }
+
+
+# =========================================================================
+# CAMPUSCONNECT 2.0: ASSIGNMENT MANAGEMENT ENDPOINTS
+# =========================================================================
+
+@app.post("/subjects/{subject_id}/assignments")
+def create_assignment(
+    subject_id: str,
+    payload: dict
+):
+    """
+    Teacher creates an assignment inside their owned subject repository.
+    Verifies teacher is active and owns the subject (or Admin).
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    user_email = str(payload.get("teacher_email", payload.get("user_email", ""))).strip().lower()
+    user_role = str(payload.get("user_role", "Teacher")).strip().capitalize()
+
+    try:
+        sub = db.subjects.find_one({"_id": ObjectId(subject_id)})
+    except Exception:
+        sub = db.subjects.find_one({"subject_code": subject_id})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subject repository not found.")
+
+    sub_id_str = str(sub["_id"])
+
+    # Ownership check
+    if user_role != "Admin":
+        if user_role != "Teacher":
+            raise HTTPException(status_code=403, detail="Only teachers can create assignments.")
+        if sub.get("teacher_email", "").lower() != user_email:
+            raise HTTPException(status_code=403, detail="You can only create assignments inside your own subjects.")
+        # Check active status
+        teacher_user = db.users.find_one({"email": user_email})
+        if not teacher_user or teacher_user.get("status") != "Active":
+            raise HTTPException(status_code=403, detail="Your teacher account must be active to create assignments.")
+
+    title = str(payload.get("title", "")).strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Assignment title is required.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    deadline = payload.get("deadline")
+    if not deadline:
+        # Default deadline: 7 days from now
+        deadline = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+
+    new_assign = {
+        "subject_id": sub_id_str,
+        "subject_code": sub.get("subject_code", ""),
+        "subject_name": sub.get("subject_name", ""),
+        "title": title,
+        "description": str(payload.get("description", "")).strip(),
+        "instructions": str(payload.get("instructions", "")).strip(),
+        "teacher_id": str(sub.get("teacher_id", "")),
+        "teacher_name": sub.get("teacher_name", ""),
+        "teacher_email": sub.get("teacher_email", ""),
+        "max_marks": float(payload.get("max_marks", 100)),
+        "start_date": payload.get("start_date", now_iso),
+        "deadline": deadline,
+        "allowed_formats": payload.get("allowed_formats", [".pdf", ".docx", ".txt"]),
+        "max_file_size": int(payload.get("max_file_size", 25 * 1024 * 1024)),
+        "allow_late_submissions": bool(payload.get("allow_late_submissions", True)),
+        "allow_duplicate_submissions": bool(payload.get("allow_duplicate_submissions", sub.get("allow_duplicate_submissions", False))),
+        "status": str(payload.get("status", "Published")),
+        "attachment_filename": payload.get("attachment_filename"),
+        "created_at": now_iso
+    }
+
+    res = db.assignments.insert_one(new_assign)
+    new_assign["_id"] = res.inserted_id
+
+    log_activity(
+        action="ASSIGNMENT_CREATED",
+        user_email=user_email,
+        user_name=sub.get("teacher_name", "Teacher"),
+        user_role=user_role,
+        details=f"Created assignment '{title}' in subject '{sub.get('subject_name')}'"
+    )
+
+    return {
+        "message": f"Assignment '{title}' created successfully!",
+        "assignment": serialize_assignment(new_assign)
+    }
+
+
+@app.get("/subjects/{subject_id}/assignments")
+def get_subject_assignments(
+    subject_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """
+    Returns assignments for a subject.
+    - Student: Must be enrolled; returns Published/Closed assignments. Blocks unenrolled (403).
+    - Teacher: Returns all assignments for owned subject.
+    - Admin: Returns all assignments.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        return []
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    try:
+        sub = db.subjects.find_one({"_id": ObjectId(subject_id)})
+    except Exception:
+        sub = db.subjects.find_one({"subject_code": subject_id})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subject not found.")
+
+    sub_id_str = str(sub["_id"])
+
+    if clean_role == "Student":
+        enrolled = db.enrollments.find_one({"student_email": clean_email, "subject_id": sub_id_str})
+        if not enrolled:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Enrollment Required: You must be enrolled in '{sub.get('subject_name')}' to access its assignments."
+            )
+        cursor = db.assignments.find({"subject_id": sub_id_str, "status": {"$ne": "Draft"}}).sort("created_at", -1)
+    elif clean_role == "Teacher":
+        if sub.get("teacher_email", "").lower() != clean_email:
+            raise HTTPException(status_code=403, detail="You do not own this subject.")
+        cursor = db.assignments.find({"subject_id": sub_id_str}).sort("created_at", -1)
+    else:  # Admin
+        cursor = db.assignments.find({"subject_id": sub_id_str}).sort("created_at", -1)
+
+    return [serialize_assignment(a) for a in cursor]
+
+
+@app.get("/assignments/{assignment_id}")
+def get_assignment_details(
+    assignment_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """Retrieve details for a single assignment, verifying student enrollment."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    try:
+        assign = db.assignments.find_one({"_id": ObjectId(assignment_id)})
+    except Exception:
+        assign = None
+    if not assign:
+        raise HTTPException(status_code=404, detail="Assignment not found.")
+
+    if clean_role == "Student":
+        enrolled = db.enrollments.find_one({"student_email": clean_email, "subject_id": assign.get("subject_id")})
+        if not enrolled:
+            raise HTTPException(status_code=403, detail="You are not enrolled in this course.")
+
+    return serialize_assignment(assign)
+
+
+@app.put("/assignments/{assignment_id}")
+def update_assignment(
+    assignment_id: str,
+    payload: dict
+):
+    """Teacher (owner) or Admin updates assignment instructions, dates, marks, status."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    user_email = str(payload.get("user_email", "")).strip().lower()
+    user_role = str(payload.get("user_role", "Teacher")).strip().capitalize()
+
+    try:
+        assign = db.assignments.find_one({"_id": ObjectId(assignment_id)})
+    except Exception:
+        assign = None
+    if not assign:
+        raise HTTPException(status_code=404, detail="Assignment not found.")
+
+    if user_role != "Admin" and assign.get("teacher_email", "").lower() != user_email:
+        raise HTTPException(status_code=403, detail="You do not have permission to edit this assignment.")
+
+    update_fields = {}
+    for key in ["title", "description", "instructions", "deadline", "start_date", "status"]:
+        if key in payload:
+            update_fields[key] = payload[key]
+    if "max_marks" in payload:
+        update_fields["max_marks"] = float(payload["max_marks"])
+    if "allow_late_submissions" in payload:
+        update_fields["allow_late_submissions"] = bool(payload["allow_late_submissions"])
+    if "allow_duplicate_submissions" in payload:
+        update_fields["allow_duplicate_submissions"] = bool(payload["allow_duplicate_submissions"])
+
+    if update_fields:
+        db.assignments.update_one({"_id": assign["_id"]}, {"$set": update_fields})
+
+    updated = db.assignments.find_one({"_id": assign["_id"]})
+    return {
+        "message": f"Assignment '{updated.get('title')}' updated.",
+        "assignment": serialize_assignment(updated)
+    }
+
+
+@app.delete("/assignments/{assignment_id}")
+def delete_assignment(
+    assignment_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """Teacher (owner) or Admin deletes assignment."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    try:
+        assign = db.assignments.find_one({"_id": ObjectId(assignment_id)})
+    except Exception:
+        assign = None
+    if not assign:
+        raise HTTPException(status_code=404, detail="Assignment not found.")
+
+    if clean_role != "Admin" and assign.get("teacher_email", "").lower() != clean_email:
+        raise HTTPException(status_code=403, detail="You do not have permission to delete this assignment.")
+
+    assign_id_str = str(assign["_id"])
+    db.assignments.delete_one({"_id": assign["_id"]})
+    db.submissions.delete_many({"assignment_id": assign_id_str})
+
+    return {"message": f"Assignment '{assign.get('title')}' deleted."}
+
+
+@app.get("/assignments/{assignment_id}/submissions")
+def get_assignment_submissions(
+    assignment_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """
+    - Student: Returns ONLY student's own submission.
+    - Teacher: Returns all submissions for owned assignment.
+    - Admin: Returns all submissions.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        return []
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    try:
+        assign = db.assignments.find_one({"_id": ObjectId(assignment_id)})
+    except Exception:
+        assign = None
+    if not assign:
+        raise HTTPException(status_code=404, detail="Assignment not found.")
+
+    assign_id_str = str(assign["_id"])
+
+    if clean_role == "Student":
+        cursor = db.submissions.find({"assignment_id": assign_id_str, "student_email": clean_email}).sort("submitted_at", -1)
+    elif clean_role == "Teacher":
+        if assign.get("teacher_email", "").lower() != clean_email:
+            raise HTTPException(status_code=403, detail="You do not own this assignment.")
+        cursor = db.submissions.find({"assignment_id": assign_id_str}).sort("submitted_at", -1)
+    else:  # Admin
+        cursor = db.submissions.find({"assignment_id": assign_id_str}).sort("submitted_at", -1)
+
+    return [serialize_submission(s) for s in cursor]
+
+
+@app.get("/assignments/{assignment_id}/results")
+def get_assignment_results(
+    assignment_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """Overview statistics for teacher: enrolled count, submitted count, graded count, average marks."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        return {}
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    try:
+        assign = db.assignments.find_one({"_id": ObjectId(assignment_id)})
+    except Exception:
+        assign = None
+    if not assign:
+        raise HTTPException(status_code=404, detail="Assignment not found.")
+
+    if clean_role != "Admin" and assign.get("teacher_email", "").lower() != clean_email:
+        raise HTTPException(status_code=403, detail="You do not have permission to view results for this assignment.")
+
+    assign_id_str = str(assign["_id"])
+    sub_id_str = assign.get("subject_id")
+
+    enrolled_students = list(db.enrollments.find({"subject_id": sub_id_str}))
+    submissions = list(db.submissions.find({"assignment_id": assign_id_str}))
+
+    submitted_emails = {s.get("student_email") for s in submissions}
+    graded_subs = [s for s in submissions if s.get("marks") is not None]
+    avg_marks = round(sum(s.get("marks") for s in graded_subs) / len(graded_subs), 2) if graded_subs else 0
+
+    unsubmitted_students = [
+        {"student_email": e.get("student_email"), "student_name": e.get("student_name", "Student")}
+        for e in enrolled_students if e.get("student_email") not in submitted_emails
+    ]
+
+    return {
+        "assignment_id": assign_id_str,
+        "title": assign.get("title"),
+        "total_enrolled": len(enrolled_students),
+        "total_submitted": len(submissions),
+        "total_graded": len(graded_subs),
+        "average_marks": avg_marks,
+        "max_marks": assign.get("max_marks", 100),
+        "unsubmitted_students": unsubmitted_students
+    }
+
+
+# =========================================================================
+# CAMPUSCONNECT 2.0: CRYPTOGRAPHIC ASSIGNMENT SUBMISSION (RSA + SHA-256)
+# =========================================================================
+
+@app.post("/assignments/{assignment_id}/submissions")
+async def submit_assignment(
+    assignment_id: str,
+    file: UploadFile = File(...),
+    student_email: str = Form(...),
+    student_name: str = Form(...),
+    digital_signature: Optional[str] = Form(None),
+    public_key_id: Optional[str] = Form(None),
+    signature_algorithm: Optional[str] = Form("RSA-PSS-SHA256"),
+    client_sha256: Optional[str] = Form(None)
+):
+    """
+    Submits an academic assignment with:
+    1. Student course enrollment verification
+    2. Deadline check & late submission policy enforcement
+    3. Exact binary SHA-256 hash calculation
+    4. Exact SHA-256 Duplicate File Detection (content-based, immune to filename tampering)
+    5. RSA-PSS SHA-256 digital signature cryptographic verification
+    6. Canonical receipt generation with Institutional RSA signature
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    clean_email = str(student_email).strip().lower()
+    student_name = str(student_name)
+    digital_signature = digital_signature if isinstance(digital_signature, str) and digital_signature.strip() else None
+    public_key_id = public_key_id if isinstance(public_key_id, str) and public_key_id.strip() else None
+    signature_algorithm = signature_algorithm if isinstance(signature_algorithm, str) and signature_algorithm.strip() else "RSA-PSS-SHA256"
+    client_sha256 = client_sha256 if isinstance(client_sha256, str) and client_sha256.strip() else None
+
+    try:
+        assign = db.assignments.find_one({"_id": ObjectId(assignment_id)})
+    except Exception:
+        assign = None
+    if not assign:
+        raise HTTPException(status_code=404, detail="Assignment not found.")
+
+    assign_id_str = str(assign["_id"])
+    sub_id_str = assign.get("subject_id")
+
+    # 1. Verify Student Enrollment in Subject
+    enrollment = db.enrollments.find_one({"student_email": clean_email, "subject_id": sub_id_str})
+    if not enrollment:
+        raise HTTPException(
+            status_code=403,
+            detail="Enrollment Required: You must be enrolled in this subject course to submit assignments."
+        )
+
+    # 2. Verify Assignment is not Draft / Closed
+    if assign.get("status") == "Draft":
+        raise HTTPException(status_code=403, detail="This assignment is currently in draft mode and not accepting submissions.")
+
+    # 3. Check Deadline
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    deadline_str = assign.get("deadline")
+    is_late = False
+
+    if deadline_str:
+        try:
+            deadline_dt = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+            if now_dt > deadline_dt:
+                if not assign.get("allow_late_submissions", True):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Submission deadline has passed. Late submissions are not accepted for this assignment."
+                    )
+                is_late = True
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise e
+
+    # 4. Check File Extension & Read Bytes
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Please select a document to submit.")
+
+    original_filename = Path(file.filename).name
+    ext = Path(original_filename).suffix.lower()
+    allowed_formats = assign.get("allowed_formats", [".pdf", ".docx", ".txt"])
+
+    if allowed_formats and ext not in [f.lower() for f in allowed_formats]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File extension '{ext}' is not permitted. Allowed: {', '.join(allowed_formats)}"
+        )
+
+    max_size = assign.get("max_file_size", MAX_FILE_SIZE)
+    content = await file.read(max_size + 1)
+    if not content:
+        raise HTTPException(status_code=400, detail="Cannot submit an empty file.")
+    if len(content) > max_size:
+        raise HTTPException(status_code=413, detail=f"File exceeds maximum allowed size ({format_file_size(max_size)}).")
+
+    # 5. Exact SHA-256 Calculation directly from binary bytes (content-based)
+    sha256_hash = crypto_utils.calculate_sha256(content)
+
+    # If client passed hash, verify match
+    if client_sha256 and client_sha256.strip().lower() != sha256_hash.lower():
+        raise HTTPException(status_code=400, detail="Client-provided SHA-256 hash does not match computed server hash.")
+
+    # 6. Advanced Content-Based Duplicate Detection
+    allow_dup = bool(assign.get("allow_duplicate_submissions", False))
+    duplicate_record = None
+
+    async with upload_lock:
+        existing_dup = db.submissions.find_one({
+            "assignment_id": assign_id_str,
+            "sha256_hash": sha256_hash
+        })
+
+        if existing_dup:
+            if not allow_dup:
+                log_activity(
+                    action="DUPLICATE_BLOCKED",
+                    user_email=clean_email,
+                    user_name=student_name,
+                    user_role="Student",
+                    details=f"Blocked duplicate submission with matching SHA-256 hash ({sha256_hash[:16]}...) in assignment '{assign.get('title')}'."
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Duplicate file detected! Duplicate File Detected! This document has already been submitted with identical content. Changing the filename does not make it a new document."
+                )
+            else:
+                duplicate_record = str(existing_dup["_id"])
+                log_activity(
+                    action="DUPLICATE_ALLOWED",
+                    user_email=clean_email,
+                    user_name=student_name,
+                    user_role="Student",
+                    details=f"Allowed duplicate submission (policy ON) matching submission {duplicate_record} in assignment '{assign.get('title')}'."
+                )
+
+    # 7. RSA-PSS SHA-256 Cryptographic Verification
+    verification_status = "UNVERIFIED"
+    verification_reason = "No digital signature provided"
+
+    if digital_signature and public_key_id:
+        key_doc = db.user_keys.find_one({"key_id": public_key_id.strip()})
+        if not key_doc:
+            verification_status = "UNVERIFIED"
+            verification_reason = f"Public key ID '{public_key_id}' is not registered in the system."
+        elif key_doc.get("is_revoked", False):
+            verification_status = "KEY_REVOKED"
+            verification_reason = "Signing public key has been revoked by the owner."
+        else:
+            pub_pem = key_doc.get("public_key_pem", "")
+            is_valid, reason = crypto_utils.verify_user_signature(pub_pem, digital_signature, content, sha256_hash)
+            if is_valid:
+                verification_status = "VALID"
+                verification_reason = "RSA-PSS digital signature cryptographically verified."
+            else:
+                verification_status = "INVALID"
+                verification_reason = reason
+
+    # 8. Save Physical File to Disk Vault
+    stored_filename = f"sub_{uuid.uuid4().hex}_{original_filename}"
+    file_path = UPLOAD_DIR / stored_filename
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # 9. Create Submission ID & Institutional Non-Repudiation Receipt
+    submission_id = str(ObjectId())
+    canonical_receipt = f"{submission_id}|{clean_email}|{assign_id_str}|{sha256_hash}|{now_iso}"
+    receipt_signature = crypto_utils.sign_data_with_institutional_key(canonical_receipt)
+
+    submission_doc = {
+        "_id": ObjectId(submission_id),
+        "assignment_id": assign_id_str,
+        "subject_id": sub_id_str,
+        "subject_code": assign.get("subject_code", ""),
+        "subject_name": assign.get("subject_name", ""),
+        "assignment_title": assign.get("title", ""),
+        "student_id": str(enrollment.get("student_id", "")),
+        "student_name": student_name,
+        "student_email": clean_email,
+        "filename": stored_filename,
+        "original_filename": original_filename,
+        "file_path": str(file_path),
+        "file_size": len(content),
+        "content_type": file.content_type or "application/octet-stream",
+        "sha256_hash": sha256_hash,
+        "digital_signature": digital_signature or "",
+        "signature_algorithm": signature_algorithm or "RSA-PSS-SHA256",
+        "public_key_id": public_key_id or "",
+        "submitted_at": now_iso,
+        "is_late": is_late,
+        "verification_status": verification_status,
+        "verification_reason": verification_reason,
+        "last_verified_at": now_iso,
+        "marks": None,
+        "max_marks": assign.get("max_marks", 100),
+        "feedback": "",
+        "evaluated_by": None,
+        "evaluated_at": None,
+        "receipt_signature": receipt_signature,
+        "is_duplicate": bool(duplicate_record),
+        "duplicate_of_submission_id": duplicate_record
+    }
+
+    db.submissions.insert_one(submission_doc)
+
+    # Record initial verification log
+    db.verification_logs.insert_one({
+        "submission_id": submission_id,
+        "verifier_email": clean_email,
+        "verifier_role": "Student",
+        "verification_status": verification_status,
+        "verification_reason": verification_reason,
+        "original_hash": sha256_hash,
+        "verified_hash": sha256_hash,
+        "public_key_id": public_key_id or "",
+        "timestamp": now_iso
+    })
+
+    log_activity(
+        action="ASSIGNMENT_SUBMITTED",
+        user_email=clean_email,
+        user_name=student_name,
+        user_role="Student",
+        details=f"Submitted assignment '{assign.get('title')}' with status {verification_status} (SHA-256: {sha256_hash[:16]}...)"
+    )
+
+    return {
+        "message": f"Assignment submitted successfully! Status: {verification_status}",
+        "submission": serialize_submission(submission_doc)
+    }
+
+
+# =========================================================================
+# CAMPUSCONNECT 2.0: SUBMISSION DETAILS, DOWNLOAD, VERIFY & EVALUATE
+# =========================================================================
+
+@app.get("/submissions/{submission_id}")
+def get_submission_by_id(
+    submission_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """Retrieve details of a single submission with strict access control."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    try:
+        sub = db.submissions.find_one({"_id": ObjectId(submission_id)})
+    except Exception:
+        sub = None
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    if clean_role == "Student" and sub.get("student_email", "").lower() != clean_email:
+        raise HTTPException(status_code=403, detail="Access denied. You can only view your own submissions.")
+
+    return serialize_submission(sub)
+
+
+@app.get("/submissions/{submission_id}/download")
+def download_submission_file(
+    submission_id: str,
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """Download submitted document binary with original filename."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    try:
+        sub = db.submissions.find_one({"_id": ObjectId(submission_id)})
+    except Exception:
+        sub = None
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    if clean_role == "Student" and sub.get("student_email", "").lower() != clean_email:
+        raise HTTPException(status_code=403, detail="Access denied. You can only download your own submissions.")
+
+    file_path = Path(sub.get("file_path", ""))
+    if not file_path.exists():
+        file_path = UPLOAD_DIR / sub.get("filename", "")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Submission file not found on disk storage.")
+
+    return FileResponse(
+        path=file_path,
+        filename=sub.get("original_filename", "submission.pdf"),
+        media_type=sub.get("content_type", "application/octet-stream")
+    )
+
+
+@app.post("/submissions/{submission_id}/verify")
+def verify_submission_signature(
+    submission_id: str,
+    payload: Optional[dict] = None
+):
+    """
+    Live cryptographic verification button for Teachers, Admins, and Students:
+    1. Reads actual file from storage vault.
+    2. Recalculates current SHA-256 hash.
+    3. Detects file tampering if current hash differs from signed original.
+    4. Verifies RSA-PSS digital signature against student's registered public key.
+    5. Checks if public key was revoked.
+    6. Logs result to audit trail & verification history.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    payload = payload or {}
+    verifier_email = str(payload.get("verifier_email", "")).strip().lower()
+    verifier_role = str(payload.get("verifier_role", "Teacher")).strip().capitalize()
+
+    try:
+        sub = db.submissions.find_one({"_id": ObjectId(submission_id)})
+    except Exception:
+        sub = None
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    file_path = Path(sub.get("file_path", ""))
+    if not file_path.exists():
+        file_path = UPLOAD_DIR / sub.get("filename", "")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Document file missing from physical storage vault.")
+
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+
+    # Step 1: Recompute SHA-256
+    current_hash = crypto_utils.calculate_sha256(file_bytes)
+    original_hash = sub.get("sha256_hash", "")
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Step 2: Tampering Detection
+    if current_hash != original_hash:
+        new_status = "TAMPERED"
+        reason = f"File content has been tampered with! Original hash: {original_hash[:16]}..., Current hash: {current_hash[:16]}..."
+    else:
+        # Step 3: Check Signature & Key
+        digital_sig = sub.get("digital_signature")
+        pub_key_id = sub.get("public_key_id")
+
+        if not digital_sig or not pub_key_id:
+            new_status = "UNVERIFIED"
+            reason = "No digital signature or public key registered with this submission."
+        else:
+            key_doc = db.user_keys.find_one({"key_id": pub_key_id.strip()})
+            if not key_doc:
+                new_status = "UNVERIFIED"
+                reason = f"Public key ID '{pub_key_id}' is not in the system registry."
+            elif key_doc.get("is_revoked", False):
+                new_status = "KEY_REVOKED"
+                reason = f"The signing public key ({pub_key_id}) has been revoked by the student."
+            else:
+                pub_pem = key_doc.get("public_key_pem", "")
+                is_valid, v_reason = crypto_utils.verify_user_signature(
+                    pub_pem, digital_sig, file_bytes, original_hash
+                )
+                if is_valid:
+                    new_status = "VALID"
+                    reason = "Cryptographic integrity verified. The RSA-PSS signature matches the document and registered student public key."
+                else:
+                    new_status = "INVALID"
+                    reason = v_reason
+
+    # Update submission
+    db.submissions.update_one(
+        {"_id": sub["_id"]},
+        {"$set": {
+            "verification_status": new_status,
+            "verification_reason": reason,
+            "last_verified_at": now_iso
+        }}
+    )
+
+    # Log to verification history
+    db.verification_logs.insert_one({
+        "submission_id": str(sub["_id"]),
+        "verifier_email": verifier_email,
+        "verifier_role": verifier_role,
+        "verification_status": new_status,
+        "verification_reason": reason,
+        "original_hash": original_hash,
+        "verified_hash": current_hash,
+        "public_key_id": sub.get("public_key_id", ""),
+        "timestamp": now_iso
+    })
+
+    log_activity(
+        action="SIGNATURE_VERIFIED",
+        user_email=verifier_email or sub.get("student_email", ""),
+        user_name=verifier_role,
+        user_role=verifier_role,
+        details=f"Verified signature for submission '{sub.get('original_filename')}': {new_status}"
+    )
+
+    return {
+        "submission_id": str(sub["_id"]),
+        "student_name": sub.get("student_name"),
+        "student_email": sub.get("student_email"),
+        "assignment_title": sub.get("assignment_title"),
+        "original_sha256": original_hash,
+        "current_sha256": current_hash,
+        "hashes_match": bool(current_hash == original_hash),
+        "verification_status": new_status,
+        "verification_reason": reason,
+        "public_key_id": sub.get("public_key_id"),
+        "signature_algorithm": sub.get("signature_algorithm", "RSA-PSS-SHA256"),
+        "verified_at": now_iso
+    }
+
+
+@app.get("/submissions/{submission_id}/receipt")
+def get_submission_receipt(
+    submission_id: str,
+    format: Optional[str] = Query(None)
+):
+    """
+    Download or view the official non-repudiation submission receipt.
+    If format=pdf, generates and streams an official PDF certificate.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    try:
+        sub = db.submissions.find_one({"_id": ObjectId(submission_id)})
+    except Exception:
+        sub = None
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    if format == "pdf":
+        pdf_bytes = crypto_utils.generate_verification_certificate_pdf(sub)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=Verification_Certificate_{submission_id[:8]}.pdf"
+            }
+        )
+
+    return {
+        "submission_id": str(sub["_id"]),
+        "student_name": sub.get("student_name"),
+        "student_email": sub.get("student_email"),
+        "assignment_title": sub.get("assignment_title"),
+        "subject_name": sub.get("subject_name"),
+        "subject_code": sub.get("subject_code"),
+        "original_filename": sub.get("original_filename"),
+        "submitted_at": sub.get("submitted_at"),
+        "sha256_hash": sub.get("sha256_hash"),
+        "public_key_id": sub.get("public_key_id"),
+        "signature_algorithm": sub.get("signature_algorithm"),
+        "verification_status": sub.get("verification_status"),
+        "receipt_signature": sub.get("receipt_signature"),
+        "institutional_public_key": crypto_utils.get_institutional_public_key_pem()
+    }
+
+
+@app.post("/submissions/{submission_id}/evaluate")
+def evaluate_submission(
+    submission_id: str,
+    payload: dict
+):
+    """Teacher provides marks and qualitative evaluation feedback."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    teacher_email = str(payload.get("teacher_email", "")).strip().lower()
+    teacher_role = str(payload.get("teacher_role", "Teacher")).strip().capitalize()
+
+    try:
+        sub = db.submissions.find_one({"_id": ObjectId(submission_id)})
+    except Exception:
+        sub = None
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    # Check that teacher owns the subject or is Admin
+    if teacher_role != "Admin":
+        sub_record = db.subjects.find_one({"_id": ObjectId(sub.get("subject_id"))})
+        if not sub_record or sub_record.get("teacher_email", "").lower() != teacher_email:
+            raise HTTPException(status_code=403, detail="Only the course instructor or an administrator can evaluate this submission.")
+
+    marks = float(payload.get("marks", 0))
+    max_marks = float(sub.get("max_marks", 100))
+    if marks < 0 or marks > max_marks:
+        raise HTTPException(status_code=400, detail=f"Marks must be between 0 and {max_marks}.")
+
+    feedback = str(payload.get("feedback", "")).strip()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    db.submissions.update_one(
+        {"_id": sub["_id"]},
+        {"$set": {
+            "marks": marks,
+            "feedback": feedback,
+            "evaluated_by": teacher_email,
+            "evaluated_at": now_iso
+        }}
+    )
+
+    log_activity(
+        action="ASSIGNMENT_EVALUATED",
+        user_email=teacher_email,
+        user_name="Teacher",
+        user_role=teacher_role,
+        details=f"Evaluated submission for {sub.get('student_name')}: {marks}/{max_marks} marks."
+    )
+
+    updated = db.submissions.find_one({"_id": sub["_id"]})
+    return {
+        "message": "Submission evaluated successfully.",
+        "submission": serialize_submission(updated)
+    }
+
+
+@app.get("/submissions/{submission_id}/verification-history")
+def get_submission_verification_history(submission_id: str):
+    """Retrieve full chronological audit trail of all verification checks performed on this submission."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        return []
+
+    logs = list(db.verification_logs.find({"submission_id": submission_id}).sort("timestamp", -1))
+    return mongo.serialize_docs(logs)
+
+
+# =========================================================================
+# CAMPUSCONNECT 2.0: RSA USER KEY MANAGEMENT
+# =========================================================================
+
+@app.post("/keys/register")
+def register_user_public_key(payload: dict):
+    """
+    Registers a client-generated RSA Public Key in PEM format.
+    Private key is generated and stored exclusively on the user device.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    user_email = str(payload.get("user_email", "")).strip().lower()
+    public_key_pem = str(payload.get("public_key_pem", "")).strip()
+    algorithm = str(payload.get("algorithm", "RSA-PSS-SHA256"))
+
+    if not user_email or not public_key_pem:
+        raise HTTPException(status_code=400, detail="User email and public key PEM are required.")
+
+    # Validate PEM format
+    try:
+        from cryptography.hazmat.primitives.serialization import load_pem_public_key
+        load_pem_public_key(public_key_pem.encode("utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid RSA public key PEM format: {e}")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    key_id = payload.get("key_id") or f"key_{uuid.uuid4().hex[:12]}"
+
+    # Mark any previously active key for this user as superseded
+    db.user_keys.update_many(
+        {"user_email": user_email, "is_revoked": False},
+        {"$set": {"is_active": False}}
+    )
+
+    key_doc = {
+        "key_id": key_id,
+        "user_email": user_email,
+        "public_key_pem": public_key_pem,
+        "algorithm": algorithm,
+        "is_active": True,
+        "is_revoked": False,
+        "created_at": now_iso
+    }
+
+    db.user_keys.insert_one(key_doc)
+
+    log_activity(
+        action="RSA_KEY_REGISTERED",
+        user_email=user_email,
+        user_name="User",
+        user_role="Student",
+        details=f"Registered RSA Public Key (Key ID: {key_id})"
+    )
+
+    return {
+        "message": "RSA Public Key registered successfully in CampusConnect 2.0 registry.",
+        "key_id": key_id,
+        "algorithm": algorithm,
+        "created_at": now_iso
+    }
+
+
+@app.get("/keys/me")
+def get_my_active_key(user_email: str = Query(...)):
+    """Returns currently active public key information for the user."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    clean_email = user_email.strip().lower()
+    key = db.user_keys.find_one({"user_email": clean_email, "is_revoked": False, "is_active": True})
+    if not key:
+        key = db.user_keys.find_one({"user_email": clean_email, "is_revoked": False})
+    if not key:
+        return {"has_key": False}
+
+    return {
+        "has_key": True,
+        "key_id": key.get("key_id"),
+        "public_key_pem": key.get("public_key_pem"),
+        "algorithm": key.get("algorithm", "RSA-PSS-SHA256"),
+        "created_at": key.get("created_at"),
+        "is_revoked": bool(key.get("is_revoked", False))
+    }
+
+
+@app.post("/keys/revoke")
+def revoke_user_key(payload: dict):
+    """Revokes a registered public key."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    key_id = str(payload.get("key_id", "")).strip()
+    user_email = str(payload.get("user_email", "")).strip().lower()
+    reason = str(payload.get("reason", "Revoked by user")).strip()
+
+    key = db.user_keys.find_one({"key_id": key_id})
+    if not key:
+        raise HTTPException(status_code=404, detail="Key ID not found.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db.user_keys.update_one(
+        {"key_id": key_id},
+        {"$set": {"is_revoked": True, "is_active": False, "revoked_at": now_iso, "revocation_reason": reason}}
+    )
+
+    log_activity(
+        action="RSA_KEY_REVOKED",
+        user_email=user_email,
+        user_name="User",
+        user_role="Student",
+        details=f"Revoked RSA Public Key {key_id}: {reason}"
+    )
+
+    return {"message": f"Key '{key_id}' has been revoked successfully."}
+
+
+@app.get("/admin/keys")
+def get_all_registered_keys():
+    """Admin view of all registered student and faculty RSA public keys across campus."""
+    db = mongo.get_mongo_db()
+    if db is None:
+        return []
+
+    keys = list(db.user_keys.find({}).sort("created_at", -1))
+    return [{
+        "id": str(k["_id"]),
+        "key_id": k.get("key_id"),
+        "user_email": k.get("user_email"),
+        "algorithm": k.get("algorithm", "RSA-PSS-SHA256"),
+        "is_active": bool(k.get("is_active", True)),
+        "is_revoked": bool(k.get("is_revoked", False)),
+        "created_at": k.get("created_at"),
+        "revoked_at": k.get("revoked_at")
+    } for k in keys]
+
+
+# =========================================================================
+# CAMPUSCONNECT 2.0: DOCUMENT VERIFICATION DASHBOARD
+# =========================================================================
+
+@app.get("/verification/dashboard")
+def get_verification_dashboard(
+    user_email: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query("All")
+):
+    """
+    Returns submissions with digital signature verification analytics:
+    - Total submissions
+    - Cryptographically verified count (VALID)
+    - Tampered / Mismatch count (TAMPERED)
+    - Invalid signatures (INVALID)
+    - Revoked keys (KEY_REVOKED)
+    - Unsigned / Pending (UNVERIFIED)
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        return {"metrics": {}, "submissions": []}
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    query = {}
+    if clean_role == "Student":
+        query["student_email"] = clean_email
+    elif clean_role == "Teacher":
+        teacher_subs = list(db.subjects.find({"teacher_email": clean_email}))
+        sub_ids = [str(s["_id"]) for s in teacher_subs]
+        query["subject_id"] = {"$in": sub_ids}
+
+    all_subs = list(db.submissions.find(query).sort("submitted_at", -1))
+
+    total = len(all_subs)
+    valid_count = sum(1 for s in all_subs if s.get("verification_status") == "VALID")
+    tampered_count = sum(1 for s in all_subs if s.get("verification_status") == "TAMPERED")
+    invalid_count = sum(1 for s in all_subs if s.get("verification_status") == "INVALID")
+    revoked_count = sum(1 for s in all_subs if s.get("verification_status") == "KEY_REVOKED")
+    unverified_count = sum(1 for s in all_subs if s.get("verification_status") in ["UNVERIFIED", None])
+
+    filtered = all_subs
+    if status_filter and status_filter != "All":
+        filtered = [s for s in all_subs if s.get("verification_status") == status_filter]
+
+    return {
+        "metrics": {
+            "total_submissions": total,
+            "valid_verified": valid_count,
+            "tampered": tampered_count,
+            "invalid": invalid_count,
+            "revoked": revoked_count,
+            "unverified": unverified_count
+        },
+        "submissions": [serialize_submission(s) for s in filtered]
+    }
+

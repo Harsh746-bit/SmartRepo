@@ -11,7 +11,9 @@ import {
   User as UserIcon,
   AlertCircle,
   Clock,
-  Sparkles
+  Building,
+  BadgeCheck,
+  ShieldCheck
 } from "lucide-react";
 import { API_BASE } from "../config";
 
@@ -21,6 +23,8 @@ export default function AuthView({ onLoginSuccess }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
+  const [department, setDepartment] = useState("Computer Science & Engineering");
+  const [employeeId, setEmployeeId] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -43,7 +47,9 @@ export default function AuthView({ onLoginSuccess }) {
             full_name: fullName.trim(),
             email: email.trim().toLowerCase(),
             password: password,
-            role: registerRole
+            role: registerRole,
+            department: registerRole === "Teacher" ? department.trim() : "Student",
+            employee_id: registerRole === "Teacher" ? employeeId.trim() : ""
           }
         : {
             email: email.trim().toLowerCase(),
@@ -88,7 +94,9 @@ export default function AuthView({ onLoginSuccess }) {
         name: data.user?.full_name || data.full_name || fullName || "Campus Member",
         email: data.user?.email || data.email || email.toLowerCase(),
         role: data.user?.role || data.role || "Student",
-        status: data.user?.status || "Active"
+        status: data.user?.status || "Active",
+        department: data.user?.department || department,
+        employee_id: data.user?.employee_id || employeeId
       };
 
       localStorage.setItem("smartrepo_token", token);
@@ -115,31 +123,35 @@ export default function AuthView({ onLoginSuccess }) {
                 <GraduationCap size={28} className="crest-svg" />
               </div>
               <div className="auth-crest-titles">
-                <h2 className="crest-brand-name">CampusConnect</h2>
-                <span className="crest-brand-sub">Academic Repository System</span>
+                <h2 className="crest-brand-name">CampusConnect 2.0</h2>
+                <span className="crest-brand-sub">Academic Repository & LMS</span>
               </div>
             </div>
 
             <div className="auth-brand-pitch">
-              <h3>Empowering Higher Education With Smart Repositories</h3>
+              <h3>Secure Academic Learning Management & Document Vault</h3>
               <p>
-                A secure, centralized digital cloud for lecture presentations, research assignments, course syllabi, and academic resources.
+                An enterprise-grade collegiate platform with RSA Digital Signatures, verifiable student assignments, teacher moderation, and SHA-256 integrity assurance.
               </p>
             </div>
           </div>
 
           <div className="auth-highlights-list">
             <div className="auth-highlight-item">
-              <CheckCircle2 size={18} className="highlight-check" />
-              <span>Subject-wise isolated repositories & course enrollment</span>
+              <ShieldCheck size={18} className="highlight-check" />
+              <span>RSA-PSS 3072-bit Cryptographic Digital Signatures</span>
             </div>
             <div className="auth-highlight-item">
               <CheckCircle2 size={18} className="highlight-check" />
-              <span>Cryptographic SHA-256 duplicate detection</span>
+              <span>Moodle-inspired Assignment & Evaluation System</span>
             </div>
             <div className="auth-highlight-item">
               <CheckCircle2 size={18} className="highlight-check" />
-              <span>Strict Role-Based Access Control (Student, Teacher, Admin)</span>
+              <span>Strict Teacher Verification & Approval Workflow</span>
+            </div>
+            <div className="auth-highlight-item">
+              <CheckCircle2 size={18} className="highlight-check" />
+              <span>Binary SHA-256 Duplicate Detection Engine</span>
             </div>
           </div>
 
@@ -151,7 +163,7 @@ export default function AuthView({ onLoginSuccess }) {
         {/* Right Authentication Form Card */}
         <div className="auth-form-panel">
           <div className="auth-form-header">
-            <h2>{isRegister ? "Create Campus Account" : "Unified Institutional Login"}</h2>
+            <h2>{isRegister ? "Create Academic Profile" : "Institutional Single Sign-On"}</h2>
             <p>
               {isRegister
                 ? "Select your campus role and register your academic profile"
@@ -170,12 +182,12 @@ export default function AuthView({ onLoginSuccess }) {
                 Welcome, <strong>{teacherPendingNotice.name}</strong>! Your faculty account request (<em>{teacherPendingNotice.email}</em>) has been registered and is currently <strong>Pending Administrator Review</strong>.
               </p>
               <p style={{ margin: 0, fontSize: "0.82rem", color: "#3b82f6" }}>
-                An administrator will review and activate your teacher privileges shortly. Once approved, you can log in below.
+                An administrator will review and activate your teacher privileges shortly. Once approved, you can sign in below.
               </p>
             </div>
           )}
 
-          {/* Role Selection Tabs ONLY in Register Mode (Common unified login without role tabs) */}
+          {/* Role Selection Tabs ONLY in Register Mode */}
           {isRegister && (
             <div className="auth-role-tabs" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
               <button
@@ -231,6 +243,42 @@ export default function AuthView({ onLoginSuccess }) {
                   />
                 </div>
               </div>
+            )}
+
+            {isRegister && registerRole === "Teacher" && (
+              <>
+                <div className="auth-input-group">
+                  <label className="auth-label" htmlFor="auth-dept">Academic Department</label>
+                  <div className="auth-field-wrapper">
+                    <Building size={16} className="auth-field-icon" />
+                    <input
+                      id="auth-dept"
+                      type="text"
+                      className="auth-input"
+                      placeholder="e.g. Computer Science & Engineering"
+                      value={department}
+                      onChange={(e) => setDepartment(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="auth-input-group">
+                  <label className="auth-label" htmlFor="auth-empid">Faculty Employee ID</label>
+                  <div className="auth-field-wrapper">
+                    <BadgeCheck size={16} className="auth-field-icon" />
+                    <input
+                      id="auth-empid"
+                      type="text"
+                      className="auth-input"
+                      placeholder="e.g. FAC-2026-CS88"
+                      value={employeeId}
+                      onChange={(e) => setEmployeeId(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+              </>
             )}
 
             <div className="auth-input-group">

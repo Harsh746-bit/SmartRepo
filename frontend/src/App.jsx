@@ -26,6 +26,7 @@ import ActivityLogsView from "./pages/ActivityLogsView";
 import StorageManagementView from "./pages/StorageManagementView";
 import NotificationsView from "./pages/NotificationsView";
 import ProfileView from "./pages/ProfileView";
+import VerificationDashboardView from "./pages/VerificationDashboardView";
 import { API_BASE } from "./config";
 
 export default function App() {
@@ -678,6 +679,9 @@ export default function App() {
 
       case "storage_management":
         return <StorageManagementView />;
+
+      case "verification_center":
+        return <VerificationDashboardView currentUser={user} />;
 
       case "recycle_bin":
         return (

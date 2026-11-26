@@ -1,15 +1,16 @@
 <div align="center">
 
-# 🎓 CampusConnect – Smart Repository Management System
+# 🎓 CampusConnect 2.0 – Secure Academic Repository & Learning Management System
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Vercel-black?style=for-the-badge&logo=vercel&logoColor=white)](https://smart-repo-ten.vercel.app/)
 [![GitHub Repo](https://img.shields.io/badge/GitHub-Repository-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Harsh746-bit/SmartRepo)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![React 19](https://img.shields.io/badge/Frontend-React%2019-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
 [![MongoDB Atlas](https://img.shields.io/badge/Database-MongoDB%20Atlas-47A248?style=for-the-badge&logo=mongodb&logoColor=white)](https://www.mongodb.com/atlas)
+[![RSA-PSS 3072](https://img.shields.io/badge/Cryptography-RSA--PSS%203072--bit-blue?style=for-the-badge&logo=letsencrypt&logoColor=white)](#)
 
 <p align="center">
-  <strong>An enterprise-grade, role-based academic document repository and intelligent asset distribution cloud designed for collegiate institutions.</strong>
+  <strong>An enterprise-grade, Moodle-inspired academic repository and learning management system with genuine RSA-PSS 3072-bit cryptographic digital signatures, non-repudiation audit trails, binary SHA-256 duplicate defense, strict teacher approval lifecycle, and role-isolated document workflows.</strong>
 </p>
 
 [🚀 Explore Live Application](https://smart-repo-ten.vercel.app/) • [📖 View Documentation](PROJECT_DOCUMENTATION.md) • [🐛 Report Bug](https://github.com/Harsh746-bit/SmartRepo/issues)
@@ -26,39 +27,48 @@ You can explore all role-specific workspaces using the pre-configured institutio
 
 | Role | Email | Password | Access Capabilities |
 | :--- | :--- | :--- | :--- |
-| **🛡️ Administrator** | `admin@smartrepo.edu` | `admin123` | Institutional moderation, user lifecycle management, storage analytics, audit logs |
-| **👨‍🏫 Faculty / Teacher** | `omkar@gmail.com` | `admin123` | Syllabus publication, course material repository, academic asset downloads |
-| **🎓 Student** | `parth@gmail.com` | `parth123` | Lecture note uploads, peer resource browsing, bookmarks, personal recycle bin |
+| **🛡️ Administrator** | `admin@smartrepo.edu` | `admin123` | Institutional moderation, Teacher verification & approval, Verification Center, storage analytics, audit logs |
+| **👨‍🏫 Faculty / Teacher** | `omkar@gmail.com` | `admin123` | Course creation & management, Assignment creation & grading, Learning material uploads, digital signature validation |
+| **🎓 Student** | `parth@gmail.com` | `parth123` | Course enrollment, In-browser 3072-bit RSA key generation & signing, assignment submission, certificate downloads |
 
 ---
 
-## ⚡ Core Innovations & Features
+## ⚡ CampusConnect 2.0 Core Innovations & Features
 
-### 1. 🛡️ Strict Server-Side Role-Based Access Control (RBAC)
-- **Role Isolation**: Dedicated workspaces for **Students**, **Teachers**, and **Administrators**.
-- **Query-Level Security**: Document permissions enforced in MongoDB Atlas queries (not just cosmetic frontend hiding). Students and faculty never access unauthorized private or pending materials.
-- **Root Admin Safeguard**: Primary institutional administrator (`admin@smartrepo.edu`) is permanently shielded against accidental deletion, suspension, or role demotion.
+### 1. 🔏 Authentic RSA-PSS (3072-Bit) Cryptographic Digital Signatures
+- **Client-Side Key Generation**: 3072-bit RSA key pairs generated entirely in-browser via the Web Crypto API (`RSA-PSS`, SHA-256, 32-byte salt).
+- **Zero-Knowledge Key Storage**: Private keys are stored strictly in client-side secure storage (`localStorage`) and exportable as encrypted/standard PEM files—**never transmitted to or stored on the backend**.
+- **Backend Cryptographic Verification**: Python `cryptography` package verifies signatures using public keys stored in MongoDB Atlas, validating exact binary integrity against the document's SHA-256 digest.
+- **Institutional Non-Repudiation Receipts**: Institutional RSA key signs tamper-proof receipts upon verification.
+- **Official PDF Verification Certificates**: Generates verifiable PDF certificates with submission hash, signer metadata, and institutional seals via ReportLab.
 
-### 2. 🔍 Multi-Tier Intelligent Content Deduplication
-Traditional systems only check filenames. CampusConnect employs a 3-tier heuristic pipeline:
-- **Tier 1 (Streaming SHA-256 Digest)**: Instant binary deduplication without loading unnecessary overhead into RAM.
-- **Tier 2 (Normalized Content Hash)**: Textual extraction from PDFs and Office docs to catch re-saved files.
-- **Tier 3 (Plagiarism & Fuzzy Similarity Matching)**: Uses `SequenceMatcher` ($\ge 88\%$ similarity threshold) to intercept submissions with identical body content uploaded under different filenames.
+### 2. 📋 Moodle-Inspired Assignment Management System
+- **Teacher Assignment Studio**: Teachers create assignments within their subjects with submission deadlines, instructions, maximum marks, allowed file formats, and configurable late submission & duplicate policies.
+- **Student Submission Workflow**: Enrolled students upload submissions, calculate binary SHA-256 in real time, apply client-side RSA-PSS digital signatures, and track evaluation marks and feedback.
+- **Teacher Grading & Evaluation**: Teachers review submitted files, verify digital signatures on-demand, enter marks (0–Max Marks), and provide individual qualitative feedback.
 
-### 3. 🔎 Deep Content & Semantic Synonym Search
-- **Full-Text Ingestion**: Automatically parses text from `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.csv`, and `.txt`.
-- **Domain Synonym Expansion**: Searching `"ML"` automatically matches *"machine learning"*, *"deep learning"*, *"neural networks"*, and *"AI"*. Searching `"DSA"` matches *"data structures"*, *"trees"*, and *"algorithms"*.
+### 3. 🛡️ Strict Teacher Registration & Approval Workflow
+- **Pending Verification Queue**: Teachers register with Department, Employee ID, and academic credentials. Accounts are flagged as `PENDING` with immediate login and API access blocked.
+- **Admin Verification Section**: Institutional administrators inspect credentials and execute one-click **Approval** or **Rejection** with administrative feedback.
+- **Strict RBAC Enforcement**: Backend authorization guards ensure only active, approved teachers can create subjects, assign coursework, or upload materials.
 
-### 4. ♻️ Safe Two-Stage Recycle Bin Vault
-- **Soft Deletion**: Accidental deletions move documents to the role-isolated **Recycle Bin Vault**.
-- **One-Click Restoration**: Restores files back to the active repository while preserving original status and metadata.
-- **Permanent Purge**: High-priority confirmation flow that unlinks physical disk binaries and wipes database records cleanly.
+### 4. 🔍 Advanced Content-Based Binary SHA-256 Deduplication
+- **Binary Fingerprint Hashing**: Calculates SHA-256 directly from raw file bytes, completely ignoring file names, MIME declarations, or path metadata.
+- **Renaming Immunity**: Submitting `DSA_Assignment.pdf` and then `My_Assignment.pdf` with identical bytes immediately triggers HTTP 409 Duplicate Detection.
+- **Configurable Teacher Policy**: Teachers can toggle duplicate submission permissions per course/assignment.
+- **Concurrency & Race Condition Protection**: Async file locks prevent parallel duplicate submission exploits.
 
-### 5. 📄 Responsive In-App Document Viewer
-- High-resolution modal (`94vw` / `92vh`) with dynamic zoom controls ($50\%$ to $200\%$), fullscreen mode, keyboard shortcuts (`Esc`), one-click text copying, and direct downloads.
+### 5. 📚 Faculty Material Sharing vs. Private Student Submissions Isolation
+- **Dual Subject Repository Structure**:
+  - **A. Faculty Learning Materials**: Accessible to all enrolled students for preview and download; strictly read-only for students.
+  - **B. Assignments & Student Submissions**: Isolated per student. Students cannot access classmates' submissions under any circumstances.
+- **IDOR Protection**: Database query filters strictly forbid students from accessing submissions or materials from subjects they are not enrolled in.
 
-### 6. 📊 Institutional Analytics & Cryptographic Activity Audit Trail
-- Live tracking of storage consumption by category, download frequencies, active user distributions, and cryptographic activity logs for institutional compliance.
+### 6. 🛡️ Institutional Verification Center & Dashboard
+- Dedicated institutional verification pane (`/verification/dashboard`) tracking:
+  - System-wide verification metrics (Total, Valid, Tampered, Invalid, Revoked).
+  - Searchable verification log across all departments and subjects.
+  - Instant one-click cryptographic re-verification and PDF certificate download.
 
 ---
 

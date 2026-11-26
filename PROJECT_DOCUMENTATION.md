@@ -243,7 +243,197 @@ The system connects to **MongoDB Atlas** cluster (`cluster0.g3r2cw6.mongodb.net`
   - If they are a first-time user, their account is automatically created in MongoDB Atlas, hashed via PBKDF2 (600,000 iterations), and immediately enrolled.
   - They immediately appear in the **Student & Faculty Directory** on the Administrator control page.
   - When they return and log in again, their password is authenticated.
-- **Primary Administrator Account**:
-  - **Email**: `admin@smartrepo.edu`
-  - **Password**: `admin123`
-  - **Role**: Administrator (Directory management, audit, user status & permissions)
+---
+
+### 9. CampusConnect 2.0 Architecture & Cryptographic Foundations
+
+CampusConnect 2.0 upgrades the system into an enterprise Moodle-inspired academic learning management system with end-to-end non-repudiation, genuine RSA-PSS 3072-bit digital signatures, institutional verification certificates, and fine-grained course assignment workflows.
+
+```mermaid
+flowchart TD
+    subgraph Client ["Client Browser (Student / Teacher)"]
+        WC["Web Crypto API"]
+        LocalKeys["Secure LocalStorage\n(Private Key Never Leaves Device)"]
+        UI_Sign["Digital Signature Signer (RSA-PSS 3072)"]
+        HashCalc["Binary SHA-256 Digest Generator"]
+        
+        WC --> LocalKeys
+        LocalKeys --> UI_Sign
+        HashCalc --> UI_Sign
+    end
+
+    subgraph Backend ["FastAPI Backend (Security & Cryptography Engine)"]
+        Route_Submit["POST /assignments/{id}/submissions"]
+        CryptoService["backend/crypto_utils.py\n(Python 'cryptography' library)"]
+        DupEngine["Binary SHA-256 Duplicate Analyzer"]
+        InstSigner["Institutional RSA Signer"]
+        PDFGen["ReportLab PDF Certificate Engine"]
+
+        Route_Submit --> DupEngine
+        Route_Submit --> CryptoService
+        CryptoService --> InstSigner
+        InstSigner --> PDFGen
+    end
+
+    subgraph Database ["MongoDB Atlas (smartrepo)"]
+        Col_Keys[("user_keys\n(Public Keys Only)")]
+        Col_Assign[("assignments\n(Course & Deadlines)")]
+        Col_Subs[("submissions\n(Hashes, Sigs, Marks)")]
+        Col_Logs[("verification_logs\n(Audit Trail)")]
+    end
+
+    UI_Sign -->|Binary Hash + RSA-PSS Signature| Route_Submit
+    CryptoService <-->|Verify Against Stored Public Key| Col_Keys
+    DupEngine <-->|Check Existing Hashes| Col_Subs
+    Route_Submit --> Col_Assign
+    Route_Submit --> Col_Subs
+    CryptoService --> Col_Logs
+```
+
+---
+
+### 10. Database Schema Extensions (MongoDB Atlas)
+
+In addition to `users` and `documents`, CampusConnect 2.0 introduces four core collections:
+
+#### 10.1. Collection: `assignments`
+```json
+{
+  "_id": "ObjectId('6b083252d776d86d47d65a02')",
+  "title": "Assignment 1: Asymptotic Complexity",
+  "description": "Analyze asymptotic complexity of recursive divide-and-conquer algorithms.",
+  "instructions": "Submit solutions in PDF format with mathematical proofs.",
+  "subject_id": "6b083250d776d86d47d659fc",
+  "subject_code": "CS-501",
+  "created_by_id": "6740...a1",
+  "created_by_name": "Prof. Turing",
+  "max_marks": 100.0,
+  "created_at": "2026-11-26T18:00:00+00:00",
+  "start_date": "2026-11-26T18:00:00+00:00",
+  "deadline": "2026-12-05T23:59:59+00:00",
+  "allowed_file_formats": [".pdf", ".docx"],
+  "max_file_size_mb": 25,
+  "allow_late_submissions": false,
+  "allow_duplicate_submissions": false,
+  "status": "published"
+}
+```
+
+#### 10.2. Collection: `submissions`
+```json
+{
+  "_id": "ObjectId('6b083253d776d86d47d65a0a')",
+  "assignment_id": "6b083252d776d86d47d65a02",
+  "subject_id": "6b083250d776d86d47d659fc",
+  "student_id": "6740...b2",
+  "student_name": "Alice Lovelace",
+  "student_email": "alice@smartrepo.edu",
+  "filename": "alice_cs501_assignment1.pdf",
+  "file_path": "/uploads/uuid_hash.pdf",
+  "file_size": 18450,
+  "sha256_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "signature": "3a7f...[base64_encoded_rsa_pss_signature]...",
+  "key_id": "key_7440e556541e",
+  "signature_status": "VALID",
+  "submitted_at": "2026-11-26T18:15:00+00:00",
+  "is_late": false,
+  "marks_obtained": 96.5,
+  "feedback": "Outstanding asymptotic analysis with rigorous proofs.",
+  "evaluated_at": "2026-11-26T18:30:00+00:00",
+  "institutional_receipt": {
+    "receipt_id": "rcpt_44b0e891",
+    "issued_at": "2026-11-26T18:15:02+00:00",
+    "institutional_signature": "8c2d...[institutional_signature]..."
+  }
+}
+```
+
+#### 10.3. Collection: `user_keys`
+```json
+{
+  "_id": "ObjectId('6b083254d776d86d47d65a0d')",
+  "user_id": "6740...b2",
+  "user_email": "alice@smartrepo.edu",
+  "key_id": "key_7440e556541e",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0...\n-----END PUBLIC KEY-----",
+  "key_type": "RSA",
+  "key_size": 3072,
+  "status": "ACTIVE",
+  "created_at": "2026-11-26T18:05:00+00:00",
+  "revoked_at": null
+}
+```
+
+#### 10.4. Collection: `verification_logs`
+```json
+{
+  "_id": "ObjectId('6b083256d776d86d47d65a12')",
+  "submission_id": "6b083253d776d86d47d65a0a",
+  "assignment_id": "6b083252d776d86d47d65a02",
+  "verified_by_user_id": "6740...a1",
+  "verified_by_name": "Prof. Turing",
+  "result": "VALID",
+  "verified_at": "2026-11-26T18:20:00+00:00",
+  "details": "RSA-PSS signature matches document SHA-256 digest."
+}
+```
+
+---
+
+### 11. Complete Cryptographic Signature Protocol
+
+CampusConnect 2.0 adheres to a zero-knowledge, mathematically verifiable non-repudiation model:
+
+1. **Key Generation (Client-Side)**:
+   - Uses Web Crypto API (`window.crypto.subtle.generateKey`):
+     - Algorithm: `RSA-PSS`
+     - Modulus Length: `3072 bits`
+     - Public Exponent: `65537` (`0x010001`)
+     - Hash Function: `SHA-256`
+   - Private key remains in client `localStorage` with standard PKCS#8 PEM export option.
+   - Public key exported as SPKI PEM and submitted to `POST /keys/register`.
+2. **Document Signing (Client-Side)**:
+   - Calculates raw SHA-256 hash across document bytes using Web Crypto API.
+   - Signs the hash/content using the private key with `RSA-PSS` (`saltLength: 32`).
+   - Base64-encodes the signature and sends along with `key_id` in multipart upload.
+3. **Backend Verification (`backend/crypto_utils.py`)**:
+   - Computes independent binary SHA-256 hash directly from uploaded file bytes.
+   - Matches calculated hash against stored hash (`TAMPERED` if mismatch).
+   - Fetches registered public key (`KEY_REVOKED` if revoked).
+   - Cryptographically verifies signature using `cryptography.hazmat.primitives.asymmetric.padding.PSS` with `MGF1(hashes.SHA256())`.
+   - Result: `VALID` or `INVALID`.
+4. **Institutional Non-Repudiation Receipt**:
+   - Institutional private key (`backend/keys/institutional_private.pem`) signs the verified submission record.
+   - Produces tamper-evident verification metadata.
+5. **Official PDF Verification Certificate**:
+   - Endpoint `GET /submissions/{id}/receipt?format=pdf` generates a formal PDF certificate formatted with institutional header, signature status badges, SHA-256 digest, signer details, and timestamp seals via ReportLab.
+
+---
+
+### 12. CampusConnect 2.0 API Endpoints
+
+| Category | Method | Endpoint | Access Level | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **Teacher Lifecycle** | `GET` | `/admin/teachers/pending` | Admin Only | Lists all pending teacher registration applications |
+| | `POST` | `/admin/teachers/{user_id}/approve` | Admin Only | Approves pending teacher account |
+| | `POST` | `/admin/teachers/{user_id}/reject` | Admin Only | Rejects teacher application with optional feedback |
+| **Subject Management**| `PUT` | `/subjects/{id}` | Course Teacher / Admin | Updates subject metadata (name, code, description) |
+| | `DELETE`| `/subjects/{id}` | Course Teacher / Admin | Safe deletion with cascade check on assignments |
+| **Assignment Management**| `POST` | `/subjects/{id}/assignments` | Course Teacher / Admin | Creates a new assignment with deadlines & marks |
+| | `GET` | `/subjects/{id}/assignments` | Enrolled / Teacher / Admin | Lists assignments in a subject |
+| | `GET` | `/assignments/{id}` | Enrolled / Teacher / Admin | Retrieves assignment details and instructions |
+| | `PUT` | `/assignments/{id}` | Course Teacher / Admin | Edits assignment details, deadline, or status |
+| | `DELETE`| `/assignments/{id}` | Course Teacher / Admin | Deletes assignment and associated submissions |
+| | `GET` | `/assignments/{id}/submissions` | Course Teacher / Admin | Retrieves submission roster for an assignment |
+| **Submissions & Crypto**| `POST` | `/assignments/{id}/submissions` | Enrolled Students Only | Uploads document with binary SHA-256 & RSA-PSS signature |
+| | `GET` | `/submissions/{id}` | Student (own) / Teacher / Admin | Retrieves submission metadata and evaluation |
+| | `GET` | `/submissions/{id}/download`| Student (own) / Teacher / Admin | Downloads student submission file |
+| | `POST` | `/submissions/{id}/verify` | Course Teacher / Admin | Executes live cryptographic signature verification |
+| | `POST` | `/submissions/{id}/evaluate` | Course Teacher / Admin | Enters marks and individual feedback |
+| | `GET` | `/submissions/{id}/receipt` | Student (own) / Teacher / Admin | Generates institutional non-repudiation receipt (`?format=pdf`) |
+| | `GET` | `/submissions/{id}/verification-history` | Teacher / Admin | Audit trail of verification attempts |
+| **Key Management** | `POST` | `/keys/register` | Authenticated | Registers user's RSA 3072-bit public key |
+| | `GET` | `/keys/me` | Authenticated | Retrieves current user's registered public keys |
+| | `POST` | `/keys/revoke` | Authenticated | Revokes a specified public key |
+| | `GET` | `/admin/keys` | Admin Only | System-wide registry of all user public keys |
+| **Verification Center** | `GET` | `/verification/dashboard` | Teacher / Admin | Verification statistics, metrics, and audit roster |
