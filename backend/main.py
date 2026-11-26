@@ -1271,6 +1271,9 @@ async def upload_document(
                 "subject_id": sub_id_str,
                 "sha256_hash": file_hash,
                 "is_deleted": {"$ne": True}
+            }) or db.submissions.find_one({
+                "subject_id": sub_id_str,
+                "sha256_hash": file_hash
             })
             if duplicate_in_subject:
                 existing_fn = duplicate_in_subject.get("original_filename", "existing document")
@@ -3426,13 +3429,29 @@ async def submit_assignment(
         raise HTTPException(status_code=400, detail="Client-provided SHA-256 hash does not match computed server hash.")
 
     # 6. Advanced Content-Based Duplicate Detection
-    allow_dup = bool(assign.get("allow_duplicate_submissions", False))
+    sub = None
+    if sub_id_str:
+        try:
+            sub = db.subjects.find_one({"_id": ObjectId(sub_id_str)})
+        except Exception:
+            sub = db.subjects.find_one({"subject_code": sub_id_str})
+
+    sub_allow_dup = bool(sub.get("allow_duplicate_submissions", False)) if sub else False
+    assign_allow_dup = bool(assign.get("allow_duplicate_submissions", False))
+    allow_dup = assign_allow_dup or sub_allow_dup
     duplicate_record = None
 
     async with upload_lock:
         existing_dup = db.submissions.find_one({
             "assignment_id": assign_id_str,
             "sha256_hash": sha256_hash
+        }) or db.submissions.find_one({
+            "subject_id": sub_id_str,
+            "sha256_hash": sha256_hash
+        }) or db.documents.find_one({
+            "subject_id": sub_id_str,
+            "sha256_hash": sha256_hash,
+            "is_deleted": {"$ne": True}
         })
 
         if existing_dup:
