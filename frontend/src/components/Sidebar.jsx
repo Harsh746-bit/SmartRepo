@@ -102,25 +102,32 @@ export default function Sidebar({
       <aside
         className={`campus-sidebar ${collapsed ? "collapsed" : ""} ${mobileOpen ? "mobile-open" : ""}`}
       >
-        {/* Brand Crest Header */}
+        {/* Brand Header */}
         <div className="sidebar-header">
           <div
-            className="sidebar-brand-wrapper"
-            onClick={() => onSelectTab(role === "Admin" ? "admin_dashboard" : "dashboard")}
+            className="brand-badge-container"
+            onClick={collapsed ? onToggleCollapse : () => onSelectTab(role === "Admin" ? "admin_dashboard" : "dashboard")}
+            title={collapsed ? "Click to expand sidebar" : "CampusConnect 2.0"}
             style={{ cursor: "pointer" }}
-            title="CampusConnect Academic Repository"
           >
-            <div className="sidebar-crest-icon">
-              <GraduationCap size={22} />
+            <div className="brand-icon-wrapper">
+              {role === "Admin" ? (
+                <Shield className="brand-logo-icon" size={24} />
+              ) : role === "Teacher" ? (
+                <BookOpen className="brand-logo-icon" size={24} />
+              ) : (
+                <GraduationCap className="brand-logo-icon" size={24} />
+              )}
             </div>
             {!collapsed && (
-              <div className="sidebar-brand-text">
-                <span className="brand-title">CampusConnect 2.0</span>
+              <div className="brand-text">
+                <span className="brand-name">CampusConnect 2.0</span>
                 <span className="brand-subtitle">Academic Vault & LMS</span>
               </div>
             )}
           </div>
 
+          {/* Desktop Collapse Toggle */}
           <button
             type="button"
             className="sidebar-collapse-btn"
@@ -132,39 +139,40 @@ export default function Sidebar({
           </button>
         </div>
 
-        {/* User Identity Chip */}
-        <div className="sidebar-user-chip">
-          <div className="sidebar-avatar">
-            {user?.name ? user.name.charAt(0).toUpperCase() : "U"}
+        {/* Role Tag Ribbon */}
+        {!collapsed && (
+          <div className="sidebar-role-indicator">
+            <span className={`role-pill role-${role.toLowerCase()}`}>
+              {role === "Admin" ? "Administrator" : role === "Teacher" ? "Faculty / Teacher" : "Enrolled Student"}
+            </span>
           </div>
-          {!collapsed && (
-            <div className="sidebar-user-meta">
-              <span className="user-name">{user?.name || "Campus Member"}</span>
-              <span className={`user-role-badge role-${(user?.role || "Student").toLowerCase()}`}>
-                {user?.role || "Student"}
-              </span>
-            </div>
-          )}
-        </div>
+        )}
 
-        {/* Navigation List */}
-        <nav className="sidebar-nav-container">
-          <ul className="sidebar-nav-list">
+        {/* Navigation Section */}
+        <nav className="sidebar-nav">
+          <ul className="sidebar-menu-list">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = currentTab === item.id;
+
               return (
-                <li key={item.id} className="sidebar-nav-item">
+                <li key={item.id} className="sidebar-menu-item">
                   <button
                     type="button"
-                    className={`sidebar-nav-link ${isActive ? "active" : ""}`}
+                    className={`sidebar-nav-btn ${isActive ? "active" : ""}`}
                     onClick={() => handleItemClick(item.id)}
                     title={collapsed ? item.label : undefined}
                   >
-                    <Icon size={18} className="nav-icon" />
-                    {!collapsed && <span className="nav-label">{item.label}</span>}
+                    <span className="sidebar-btn-icon">
+                      <Icon size={19} />
+                    </span>
+
+                    {!collapsed && (
+                      <span className="sidebar-btn-label">{item.label}</span>
+                    )}
+
                     {item.badge && !collapsed && (
-                      <span className={`nav-badge badge-${item.badgeColor || "blue"}`}>
+                      <span className={`sidebar-badge badge-${item.badgeColor || "blue"}`}>
                         {item.badge}
                       </span>
                     )}
@@ -175,17 +183,44 @@ export default function Sidebar({
           </ul>
         </nav>
 
-        {/* Bottom Footer Actions */}
+        {/* Bottom User Profile Section */}
         <div className="sidebar-footer">
-          <button
-            type="button"
-            className="sidebar-logout-btn"
-            onClick={onLogout}
-            title={collapsed ? "Sign Out" : undefined}
-          >
-            <LogOut size={18} />
-            {!collapsed && <span>Sign Out</span>}
-          </button>
+          {collapsed && (
+            <button
+              type="button"
+              className="sidebar-expand-bottom-btn"
+              onClick={onToggleCollapse}
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+            >
+              <ChevronRight size={16} />
+            </button>
+          )}
+
+          <div className="user-profile-widget">
+            <div className="user-avatar-circle" title={user?.name || "Campus Member"}>
+              {(user?.name || "U").charAt(0).toUpperCase()}
+            </div>
+
+            {!collapsed && (
+              <div className="user-info-text">
+                <span className="user-display-name">{user?.name || "Member"}</span>
+                <span className="user-display-email" title={user?.email}>
+                  {user?.email || "user@smartrepo.edu"}
+                </span>
+              </div>
+            )}
+
+            <button
+              type="button"
+              className="sidebar-logout-btn"
+              onClick={onLogout}
+              title="Sign Out of CampusConnect"
+              aria-label="Sign Out"
+            >
+              <LogOut size={17} />
+            </button>
+          </div>
         </div>
       </aside>
     </>
