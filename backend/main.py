@@ -1035,6 +1035,49 @@ def get_my_enrollments(user_email: str = Query(...)):
 # Documents Endpoints (Active Documents, Upload, Download, Preview)
 # =========================================================================
 
+def ensure_submissions_synced(db):
+    """
+    Ensures that assignment submissions in db.submissions have matching records in db.documents
+    so they appear in 'My Uploaded Documents' and 'Browse Repository' for authorized users.
+    """
+    try:
+        submissions = list(db.submissions.find({}))
+        for sub in submissions:
+            sub_id = sub["_id"]
+            if not db.documents.find_one({"_id": sub_id}):
+                doc_entry = {
+                    "_id": sub_id,
+                    "filename": sub.get("filename"),
+                    "original_filename": sub.get("original_filename"),
+                    "file_path": sub.get("file_path"),
+                    "file_size": sub.get("file_size", 0),
+                    "content_type": sub.get("content_type", "application/octet-stream"),
+                    "category": "Assignments",
+                    "description": f"Assignment submission for '{sub.get('assignment_title', 'Course Assignment')}' in {sub.get('subject_name', '')}.",
+                    "sha256_hash": sub.get("sha256_hash"),
+                    "uploaded_by_id": str(sub.get("student_id", "")),
+                    "uploaded_by_name": sub.get("student_name", ""),
+                    "uploaded_by_email": (sub.get("student_email") or "").strip().lower(),
+                    "uploaded_by_role": "Student",
+                    "uploaded_at": sub.get("submitted_at"),
+                    "subject_id": str(sub.get("subject_id", "")),
+                    "subject_code": sub.get("subject_code", ""),
+                    "subject_name": sub.get("subject_name", ""),
+                    "approval_status": "Approved",
+                    "is_assignment_submission": True,
+                    "assignment_id": str(sub.get("assignment_id", "")),
+                    "submission_id": str(sub_id),
+                    "digital_signature": sub.get("digital_signature", ""),
+                    "signature_status": sub.get("verification_status", "VALID"),
+                    "is_deleted": False,
+                    "download_count": 0,
+                    "favorite_count": 0
+                }
+                db.documents.update_one({"_id": sub_id}, {"$set": doc_entry}, upsert=True)
+    except Exception as e:
+        print(f"[WARN] Error syncing submissions to documents: {e}")
+
+
 @app.get("/documents")
 def get_documents(
     user_email: Optional[str] = Query(None),
@@ -1047,6 +1090,8 @@ def get_documents(
     db = mongo.get_mongo_db()
     if db is None:
         return []
+
+    ensure_submissions_synced(db)
 
     user_email = user_email if isinstance(user_email, str) else None
     user_role = user_role if isinstance(user_role, str) else None
@@ -3481,6 +3526,38 @@ async def submit_assignment(
     }
 
     db.submissions.insert_one(submission_doc)
+
+    # Mirror assignment submission to documents collection so student can view/download/preview it
+    # in "My Uploaded Documents" and "Browse Repository" (while preserving peer-student privacy isolation)
+    doc_entry = {
+        "_id": ObjectId(submission_id),
+        "filename": stored_filename,
+        "original_filename": original_filename,
+        "file_path": str(file_path),
+        "file_size": len(content),
+        "content_type": file.content_type or "application/octet-stream",
+        "category": "Assignments",
+        "description": f"Assignment submission for '{assign.get('title')}' in {assign.get('subject_name', '')}.",
+        "sha256_hash": sha256_hash,
+        "uploaded_by_id": str(enrollment.get("student_id", "")),
+        "uploaded_by_name": student_name,
+        "uploaded_by_email": clean_email,
+        "uploaded_by_role": "Student",
+        "uploaded_at": now_iso,
+        "subject_id": sub_id_str,
+        "subject_code": assign.get("subject_code", ""),
+        "subject_name": assign.get("subject_name", ""),
+        "approval_status": "Approved",
+        "is_assignment_submission": True,
+        "assignment_id": assign_id_str,
+        "submission_id": submission_id,
+        "digital_signature": digital_signature or "",
+        "signature_status": verification_status,
+        "is_deleted": False,
+        "download_count": 0,
+        "favorite_count": 0
+    }
+    db.documents.update_one({"_id": ObjectId(submission_id)}, {"$set": doc_entry}, upsert=True)
 
     # Record initial verification log
     db.verification_logs.insert_one({
