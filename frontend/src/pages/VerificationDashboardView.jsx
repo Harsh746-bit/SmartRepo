@@ -5,12 +5,9 @@ import {
   ShieldX,
   KeyRound,
   Search,
-  Filter,
   Download,
-  Eye,
   RefreshCw,
   Copy,
-  CheckCircle2,
   Clock,
   AlertTriangle,
   FileCheck
@@ -119,28 +116,84 @@ export default function VerificationDashboardView({ currentUser }) {
   };
 
   return (
-    <div className="campus-view-container">
+    <div className="campus-dashboard-layout" style={{ maxWidth: "1400px", margin: "0 auto", padding: "24px" }}>
       {/* Page Header */}
-      <div className="campus-page-header">
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "16px",
+          marginBottom: "24px",
+          paddingBottom: "18px",
+          borderBottom: "1px solid #e2e8f0"
+        }}
+      >
         <div>
-          <h1 className="campus-page-title">Document Verification Center</h1>
-          <p className="campus-page-subtitle">
+          <h1
+            style={{
+              fontFamily: "var(--font-heading, inherit)",
+              fontSize: "24px",
+              fontWeight: "700",
+              color: "#0f172a",
+              margin: "0 0 6px 0",
+              letterSpacing: "-0.02em"
+            }}
+          >
+            Document Verification Center
+          </h1>
+          <p style={{ color: "#64748b", fontSize: "14px", margin: 0 }}>
             Cryptographic integrity, RSA digital signature validation, and non-repudiation audit records
           </p>
         </div>
+
         <button
           type="button"
           onClick={fetchDashboardData}
-          className="btn btn-secondary"
-          style={{ display: "flex", alignItems: "center", gap: "6px" }}
+          disabled={loading}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "9px 18px",
+            background: "#ffffff",
+            border: "1px solid #cbd5e1",
+            borderRadius: "8px",
+            color: "#1e293b",
+            fontSize: "13.5px",
+            fontWeight: "600",
+            cursor: loading ? "not-allowed" : "pointer",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.06)",
+            transition: "all 0.15s ease"
+          }}
+          onMouseEnter={(e) => {
+            if (!loading) {
+              e.currentTarget.style.background = "#f8fafc";
+              e.currentTarget.style.borderColor = "#94a3b8";
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!loading) {
+              e.currentTarget.style.background = "#ffffff";
+              e.currentTarget.style.borderColor = "#cbd5e1";
+            }
+          }}
         >
-          <RefreshCw size={14} className={loading ? "spin-animate" : ""} />
+          <RefreshCw size={15} className={loading ? "spin-animate" : ""} color="#2563eb" />
           <span>Refresh Records</span>
         </button>
       </div>
 
-      {/* Metrics Row */}
-      <div className="campus-stats-grid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
+      {/* Metrics Row in Responsive Grid */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+          gap: "16px",
+          marginBottom: "24px"
+        }}
+      >
         <StatsCard
           title="Total Submissions"
           value={metrics.total_submissions || 0}
@@ -179,27 +232,37 @@ export default function VerificationDashboardView({ currentUser }) {
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
+          flexWrap: "wrap",
           gap: "14px",
           background: "#ffffff",
           padding: "16px",
           borderRadius: "10px",
           border: "1px solid #e2e8f0",
-          margin: "20px 0 16px"
+          marginBottom: "20px",
+          boxShadow: "0 1px 2px rgba(0, 0, 0, 0.04)"
         }}
       >
-        <div style={{ position: "relative", flex: 1, maxWidth: "420px" }}>
+        <div style={{ position: "relative", flex: 1, minWidth: "260px", maxWidth: "440px" }}>
           <Search size={16} style={{ position: "absolute", left: "12px", top: "11px", color: "#94a3b8" }} />
           <input
             type="text"
             className="auth-input"
-            style={{ paddingLeft: "36px" }}
+            style={{
+              paddingLeft: "36px",
+              width: "100%",
+              height: "38px",
+              borderRadius: "8px",
+              border: "1px solid #cbd5e1",
+              fontSize: "13.5px",
+              outline: "none"
+            }}
             placeholder="Search by student, course, file name, or SHA-256 hash..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
 
-        <div style={{ display: "flex", gap: "8px" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
           {["All", "VALID", "TAMPERED", "KEY_REVOKED", "INVALID", "UNVERIFIED"].map((st) => (
             <button
               type="button"
@@ -208,12 +271,13 @@ export default function VerificationDashboardView({ currentUser }) {
               style={{
                 padding: "6px 12px",
                 borderRadius: "6px",
-                fontSize: "0.8rem",
+                fontSize: "12px",
                 fontWeight: "600",
                 cursor: "pointer",
                 border: statusFilter === st ? "1.5px solid #2563eb" : "1px solid #cbd5e1",
                 background: statusFilter === st ? "#eff6ff" : "#ffffff",
-                color: statusFilter === st ? "#2563eb" : "#64748b"
+                color: statusFilter === st ? "#2563eb" : "#64748b",
+                transition: "all 0.15s ease"
               }}
             >
               {st === "All" ? "All Statuses" : st}
@@ -223,17 +287,25 @@ export default function VerificationDashboardView({ currentUser }) {
       </div>
 
       {/* Submissions Verification Table */}
-      <div style={{ background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", overflow: "hidden" }}>
+      <div
+        style={{
+          background: "#ffffff",
+          borderRadius: "10px",
+          border: "1px solid #e2e8f0",
+          overflow: "hidden",
+          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)"
+        }}
+      >
         {loading ? (
-          <div style={{ padding: "40px", textAlign: "center", color: "#64748b" }}>
-            <RefreshCw size={24} className="spin-animate" style={{ margin: "0 auto 8px" }} />
-            <p style={{ margin: 0 }}>Verifying cryptographic records...</p>
+          <div style={{ padding: "48px", textAlign: "center", color: "#64748b" }}>
+            <RefreshCw size={26} className="spin-animate" style={{ margin: "0 auto 10px", color: "#2563eb" }} />
+            <p style={{ margin: 0, fontWeight: "500", fontSize: "14px" }}>Verifying cryptographic records...</p>
           </div>
         ) : filteredSubmissions.length === 0 ? (
-          <div style={{ padding: "40px", textAlign: "center", color: "#64748b" }}>
-            <ShieldCheck size={36} color="#94a3b8" style={{ margin: "0 auto 12px" }} />
-            <h4 style={{ margin: "0 0 4px", color: "#1e293b" }}>No Verification Records Found</h4>
-            <p style={{ margin: 0, fontSize: "0.85rem" }}>
+          <div style={{ padding: "48px", textAlign: "center", color: "#64748b" }}>
+            <ShieldCheck size={40} color="#94a3b8" style={{ margin: "0 auto 12px" }} />
+            <h4 style={{ margin: "0 0 6px", color: "#1e293b", fontSize: "16px" }}>No Verification Records Found</h4>
+            <p style={{ margin: 0, fontSize: "13.5px" }}>
               {statusFilter !== "All"
                 ? `No submissions found with status '${statusFilter}'.`
                 : "Student submissions with RSA signatures and SHA-256 hashes will appear here."}
@@ -241,14 +313,14 @@ export default function VerificationDashboardView({ currentUser }) {
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.86rem" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13.5px" }}>
               <thead>
                 <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", textAlign: "left", color: "#475569" }}>
-                  <th style={{ padding: "12px 16px" }}>Student & Course</th>
-                  <th style={{ padding: "12px 16px" }}>Document & SHA-256 Fingerprint</th>
-                  <th style={{ padding: "12px 16px" }}>Digital Signature Status</th>
-                  <th style={{ padding: "12px 16px" }}>Submission Time</th>
-                  <th style={{ padding: "12px 16px", textAlign: "right" }}>Actions</th>
+                  <th style={{ padding: "12px 18px", fontWeight: "600" }}>Student & Course</th>
+                  <th style={{ padding: "12px 18px", fontWeight: "600" }}>Document & SHA-256 Fingerprint</th>
+                  <th style={{ padding: "12px 18px", fontWeight: "600" }}>Digital Signature Status</th>
+                  <th style={{ padding: "12px 18px", fontWeight: "600" }}>Submission Time</th>
+                  <th style={{ padding: "12px 18px", fontWeight: "600", textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -261,19 +333,19 @@ export default function VerificationDashboardView({ currentUser }) {
                       onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")}
                       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                     >
-                      <td style={{ padding: "12px 16px" }}>
-                        <strong style={{ color: "#0f172a", display: "block" }}>{sub.student_name}</strong>
-                        <span style={{ fontSize: "0.78rem", color: "#64748b" }}>
+                      <td style={{ padding: "14px 18px" }}>
+                        <strong style={{ color: "#0f172a", display: "block", fontSize: "14px" }}>{sub.student_name}</strong>
+                        <span style={{ fontSize: "12px", color: "#64748b" }}>
                           {sub.subject_name} • {sub.assignment_title}
                         </span>
                       </td>
 
-                      <td style={{ padding: "12px 16px", maxWidth: "260px" }}>
+                      <td style={{ padding: "14px 18px", maxWidth: "260px" }}>
                         <span style={{ fontWeight: "600", color: "#1e293b", display: "block" }}>
                           {sub.original_filename}
                         </span>
-                        <div style={{ display: "flex", alignItems: "center", gap: "4px", marginTop: "2px" }}>
-                          <span style={{ fontFamily: "monospace", fontSize: "0.72rem", color: "#64748b" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "3px" }}>
+                          <span style={{ fontFamily: "monospace", fontSize: "11px", color: "#64748b" }}>
                             {sub.sha256_hash?.substring(0, 16)}...
                           </span>
                           <button
@@ -282,15 +354,15 @@ export default function VerificationDashboardView({ currentUser }) {
                             style={{ background: "none", border: "none", cursor: "pointer", color: "#2563eb", padding: "2px" }}
                             title="Copy full SHA-256 hash"
                           >
-                            <Copy size={11} />
+                            <Copy size={12} />
                           </button>
                           {copiedId === sub.id && (
-                            <span style={{ fontSize: "0.68rem", color: "#16a34a", fontWeight: "600" }}>Copied</span>
+                            <span style={{ fontSize: "11px", color: "#16a34a", fontWeight: "600" }}>Copied</span>
                           )}
                         </div>
                       </td>
 
-                      <td style={{ padding: "12px 16px" }}>
+                      <td style={{ padding: "14px 18px" }}>
                         <span
                           style={{
                             display: "inline-flex",
@@ -298,7 +370,7 @@ export default function VerificationDashboardView({ currentUser }) {
                             gap: "5px",
                             padding: "4px 10px",
                             borderRadius: "14px",
-                            fontSize: "0.76rem",
+                            fontSize: "12px",
                             fontWeight: "700",
                             background: badge.bg,
                             color: badge.color
@@ -309,22 +381,36 @@ export default function VerificationDashboardView({ currentUser }) {
                         </span>
                       </td>
 
-                      <td style={{ padding: "12px 16px", color: "#64748b", fontSize: "0.8rem" }}>
+                      <td style={{ padding: "14px 18px", color: "#64748b", fontSize: "12.5px" }}>
                         {new Date(sub.submitted_at).toLocaleDateString()} {new Date(sub.submitted_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                         {sub.is_late && (
-                          <span style={{ display: "inline-block", background: "#fef3c7", color: "#92400e", padding: "1px 5px", borderRadius: "4px", fontSize: "0.7rem", fontWeight: "700", marginLeft: "4px" }}>
+                          <span style={{ display: "inline-block", background: "#fef3c7", color: "#92400e", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", fontWeight: "700", marginLeft: "6px" }}>
                             Late
                           </span>
                         )}
                       </td>
 
-                      <td style={{ padding: "12px 16px", textAlign: "right" }}>
+                      <td style={{ padding: "14px 18px", textAlign: "right" }}>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
                           <button
                             type="button"
                             onClick={() => setSelectedSubmission(sub)}
-                            className="btn btn-secondary"
-                            style={{ padding: "5px 10px", fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "4px" }}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                              padding: "6px 12px",
+                              background: "#eff6ff",
+                              border: "1px solid #bfdbfe",
+                              borderRadius: "6px",
+                              color: "#1d4ed8",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              cursor: "pointer",
+                              transition: "all 0.15s ease"
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = "#dbeafe")}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = "#eff6ff")}
                           >
                             <ShieldCheck size={14} color="#2563eb" />
                             <span>Verify Details</span>
@@ -334,8 +420,22 @@ export default function VerificationDashboardView({ currentUser }) {
                             href={`${API_BASE}/submissions/${sub.id}/receipt?format=pdf`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="btn btn-secondary"
-                            style={{ padding: "5px 10px", fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "4px", color: "#059669" }}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                              padding: "6px 12px",
+                              background: "#ecfdf5",
+                              border: "1px solid #a7f3d0",
+                              borderRadius: "6px",
+                              color: "#047857",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              textDecoration: "none",
+                              transition: "all 0.15s ease"
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = "#d1fae5")}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = "#ecfdf5")}
                             title="Download Official Verification Certificate"
                           >
                             <Download size={14} />
