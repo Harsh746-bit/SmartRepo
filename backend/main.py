@@ -1256,9 +1256,15 @@ async def upload_document(
 
     file_hash = hashlib.sha256(content).hexdigest()
 
+    # Extract text content and compute normalized content hash upfront
+    extracted_text = extractor.extract_text_from_file(content, original_filename) or ""
+    keywords = extractor.extract_keywords(extracted_text, original_filename)
+    norm_text = re.sub(r'[^a-zA-Z0-9]+', '', extracted_text.lower()) if extracted_text else ""
+    content_hash = hashlib.sha256(norm_text.encode('utf-8')).hexdigest() if len(norm_text) >= 40 else file_hash
+
     # =========================================================================
-    # SUBJECT-SPECIFIC CONFIGURABLE DUPLICATE DETECTION (SHA-256)
-    # - allow_duplicate_submissions == False (Default OFF): Reject identical SHA-256 within subject
+    # SUBJECT-SPECIFIC CONFIGURABLE DUPLICATE DETECTION (SHA-256 & CONTENT-AWARE)
+    # - allow_duplicate_submissions == False (Default OFF): Reject identical SHA-256 or matching content within subject
     # - allow_duplicate_submissions == True (ON): Allow identical file submissions within subject
     # - Identical files in DIFFERENT subjects are NOT blocked
     # - Race condition safe via upload_lock
@@ -1267,6 +1273,7 @@ async def upload_document(
 
     if sub and not allow_duplicates:
         async with upload_lock:
+            # Tier 1: Exact binary SHA-256 match
             duplicate_in_subject = db.documents.find_one({
                 "subject_id": sub_id_str,
                 "sha256_hash": file_hash,
@@ -1276,6 +1283,40 @@ async def upload_document(
                 "sha256_hash": file_hash,
                 "is_deleted": {"$ne": True}
             })
+
+            # Tier 2: Normalized text content hash match (catches re-saved Word docx, re-exported PDFs, or renamed files)
+            if not duplicate_in_subject and content_hash != file_hash:
+                duplicate_in_subject = db.documents.find_one({
+                    "subject_id": sub_id_str,
+                    "content_hash": content_hash,
+                    "is_deleted": {"$ne": True}
+                }) or db.submissions.find_one({
+                    "subject_id": sub_id_str,
+                    "content_hash": content_hash,
+                    "is_deleted": {"$ne": True}
+                })
+
+            # Tier 3: Substantial text overlap (>= 80% word similarity)
+            if not duplicate_in_subject and len(norm_text) >= 80:
+                words_set = set(re.findall(r'\b[a-zA-Z]{3,}\b', extracted_text.lower()))
+                if len(words_set) >= 12:
+                    candidates = list(db.documents.find({
+                        "subject_id": sub_id_str,
+                        "is_deleted": {"$ne": True}
+                    })) + list(db.submissions.find({
+                        "subject_id": sub_id_str,
+                        "is_deleted": {"$ne": True}
+                    }))
+                    for cand in candidates:
+                        cand_text = cand.get("extracted_text", "")
+                        if cand_text:
+                            cand_words = set(re.findall(r'\b[a-zA-Z]{3,}\b', cand_text.lower()))
+                            if len(cand_words) >= 12:
+                                overlap = len(words_set & cand_words) / len(words_set | cand_words)
+                                if overlap >= 0.80:
+                                    duplicate_in_subject = cand
+                                    break
+
             if duplicate_in_subject:
                 existing_fn = duplicate_in_subject.get("original_filename", "existing document")
                 uploader_name = duplicate_in_subject.get("uploaded_by_name", "another student")
@@ -1287,19 +1328,13 @@ async def upload_document(
                     user_role=clean_role,
                     document_id=str(duplicate_in_subject.get("_id", "")),
                     document_name=original_filename,
-                    details=f"Blocked duplicate upload with identical SHA-256 hash in subject '{sub.get('subject_name')}'. Matches '{existing_fn}'."
+                    details=f"Blocked duplicate upload with matching content in subject '{sub.get('subject_name')}'. Matches '{existing_fn}'."
                 )
 
                 raise HTTPException(
                     status_code=409,
                     detail="Duplicate file detected! Duplicate File Detected! This document has already been submitted with identical content. Changing the filename does not make it a new document."
                 )
-
-    # Extract text content and keywords upfront
-    extracted_text = extractor.extract_text_from_file(content, original_filename)
-    keywords = extractor.extract_keywords(extracted_text, original_filename)
-    norm_text = re.sub(r'[^a-zA-Z0-9]+', '', extracted_text.lower())
-    content_hash = hashlib.sha256(norm_text.encode('utf-8')).hexdigest() if len(norm_text) >= 50 else file_hash
 
     # Check if this exact file is in user's Recycle Bin for this subject
     recycle_query = {
@@ -3457,8 +3492,12 @@ async def submit_assignment(
     if len(content) > max_size:
         raise HTTPException(status_code=413, detail=f"File exceeds maximum allowed size ({format_file_size(max_size)}).")
 
-    # 5. Exact SHA-256 Calculation directly from binary bytes (content-based)
+    # 5. Exact SHA-256 & Semantic Content Analysis
     sha256_hash = crypto_utils.calculate_sha256(content)
+    extracted_text = extractor.extract_text_from_file(content, original_filename) or ""
+    keywords = extractor.extract_keywords(extracted_text, original_filename)
+    norm_text = re.sub(r'[^a-zA-Z0-9]+', '', extracted_text.lower()) if extracted_text else ""
+    content_hash = hashlib.sha256(norm_text.encode('utf-8')).hexdigest() if len(norm_text) >= 40 else sha256_hash
 
     # If client passed hash, verify match
     if client_sha256 and client_sha256.strip().lower() != sha256_hash.lower():
@@ -3478,6 +3517,7 @@ async def submit_assignment(
     duplicate_record = None
 
     async with upload_lock:
+        # Tier 1: Exact binary SHA-256 match
         existing_dup = db.submissions.find_one({
             "assignment_id": assign_id_str,
             "sha256_hash": sha256_hash,
@@ -3492,6 +3532,40 @@ async def submit_assignment(
             "is_deleted": {"$ne": True}
         })
 
+        # Tier 2: Normalized text content hash match (catches re-saved Word docx, re-exported PDFs, or renamed files)
+        if not existing_dup and content_hash != sha256_hash:
+            existing_dup = db.submissions.find_one({
+                "assignment_id": assign_id_str,
+                "content_hash": content_hash,
+                "is_deleted": {"$ne": True}
+            }) or db.submissions.find_one({
+                "subject_id": sub_id_str,
+                "content_hash": content_hash,
+                "is_deleted": {"$ne": True}
+            }) or db.documents.find_one({
+                "subject_id": sub_id_str,
+                "content_hash": content_hash,
+                "is_deleted": {"$ne": True}
+            })
+
+        # Tier 3: Substantial text overlap (>= 80% word similarity)
+        if not existing_dup and len(norm_text) >= 80:
+            words_set = set(re.findall(r'\b[a-zA-Z]{3,}\b', extracted_text.lower()))
+            if len(words_set) >= 12:
+                candidates = list(db.submissions.find({
+                    "assignment_id": assign_id_str,
+                    "is_deleted": {"$ne": True}
+                }))
+                for cand in candidates:
+                    cand_text = cand.get("extracted_text", "")
+                    if cand_text:
+                        cand_words = set(re.findall(r'\b[a-zA-Z]{3,}\b', cand_text.lower()))
+                        if len(cand_words) >= 12:
+                            overlap = len(words_set & cand_words) / len(words_set | cand_words)
+                            if overlap >= 0.80:
+                                existing_dup = cand
+                                break
+
         if existing_dup:
             if not allow_dup:
                 log_activity(
@@ -3499,7 +3573,7 @@ async def submit_assignment(
                     user_email=clean_email,
                     user_name=student_name,
                     user_role="Student",
-                    details=f"Blocked duplicate submission with matching SHA-256 hash ({sha256_hash[:16]}...) in assignment '{assign.get('title')}'."
+                    details=f"Blocked duplicate submission with matching content in assignment '{assign.get('title')}'."
                 )
                 raise HTTPException(
                     status_code=409,
@@ -3564,6 +3638,10 @@ async def submit_assignment(
         "file_size": len(content),
         "content_type": file.content_type or "application/octet-stream",
         "sha256_hash": sha256_hash,
+        "content_hash": content_hash,
+        "extracted_text": extracted_text,
+        "norm_text": norm_text,
+        "keywords": keywords,
         "digital_signature": digital_signature or "",
         "signature_algorithm": signature_algorithm or "RSA-PSS-SHA256",
         "public_key_id": public_key_id or "",
@@ -3596,6 +3674,10 @@ async def submit_assignment(
         "category": "Assignments",
         "description": f"Assignment submission for '{assign.get('title')}' in {assign.get('subject_name', '')}.",
         "sha256_hash": sha256_hash,
+        "content_hash": content_hash,
+        "extracted_text": extracted_text,
+        "norm_text": norm_text,
+        "keywords": keywords,
         "uploaded_by_id": str(enrollment.get("student_id", "")),
         "uploaded_by_name": student_name,
         "uploaded_by_email": clean_email,
