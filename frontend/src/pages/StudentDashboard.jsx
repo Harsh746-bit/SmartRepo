@@ -228,6 +228,16 @@ export default function StudentDashboard({
     }
   };
 
+  const navigateToSection = (sectionKey) => {
+    setActiveSection(sectionKey);
+    setTimeout(() => {
+      const el = document.getElementById("student-main-content");
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }, 60);
+  };
+
   return (
     <div className="campus-dashboard-layout">
       {/* Welcome Banner */}
@@ -237,20 +247,28 @@ export default function StudentDashboard({
           <p>
             Your student academic vault is ready. Access faculty learning materials, submit course assignments with RSA digital signatures, and track cryptographic verification.
           </p>
-          <div className="welcome-banner-cta-group">
+          <div className="welcome-banner-cta-group" style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginTop: "16px" }}>
             <button
               type="button"
               className="banner-cta-btn primary"
-              onClick={() => setActiveSection("assignments")}
+              onClick={() => navigateToSection("assignments")}
             >
               <FileText size={16} /> View Course Assignments
             </button>
             <button
               type="button"
               className="banner-cta-btn secondary"
-              onClick={() => setActiveSection("materials")}
+              onClick={() => navigateToSection("materials")}
             >
               <FolderOpen size={16} /> Faculty Learning Materials
+            </button>
+            <button
+              type="button"
+              className="banner-cta-btn secondary"
+              style={{ background: "rgba(255, 255, 255, 0.22)", border: "1px solid rgba(255, 255, 255, 0.45)", color: "#ffffff" }}
+              onClick={() => navigateToSection("subjects")}
+            >
+              <GraduationCap size={16} /> Browse & Enroll in Courses
             </button>
           </div>
         </div>
@@ -332,7 +350,7 @@ export default function StudentDashboard({
           subtitle="Assignments across enrolled subjects"
           icon={FileText}
           colorScheme="blue"
-          onClick={() => setActiveSection("assignments")}
+          onClick={() => navigateToSection("assignments")}
         />
         <StatsCard
           title="My Signed Submissions"
@@ -340,7 +358,7 @@ export default function StudentDashboard({
           subtitle="Submissions with cryptographic receipts"
           icon={ShieldCheck}
           colorScheme="emerald"
-          onClick={() => setActiveSection("submissions")}
+          onClick={() => navigateToSection("submissions")}
         />
         <StatsCard
           title="Faculty Materials"
@@ -348,7 +366,7 @@ export default function StudentDashboard({
           subtitle="Lecture slides & course resources"
           icon={BookOpen}
           colorScheme="indigo"
-          onClick={() => setActiveSection("materials")}
+          onClick={() => navigateToSection("materials")}
         />
         <StatsCard
           title="Enrolled Subjects"
@@ -356,36 +374,61 @@ export default function StudentDashboard({
           subtitle="Active academic repositories"
           icon={GraduationCap}
           colorScheme="teal"
-          onClick={() => setActiveSection("subjects")}
+          onClick={() => navigateToSection("subjects")}
         />
       </div>
 
       {/* Main Tab Switcher */}
-      <div style={{ display: "flex", gap: "8px", borderBottom: "1px solid #e2e8f0", margin: "24px 0 20px" }}>
-        {[
-          { key: "assignments", label: `📝 Course Assignments (${courseAssignments.length})` },
-          { key: "materials", label: `📚 Faculty Learning Materials (${facultyMaterials.length})` },
-          { key: "submissions", label: `✅ My Submissions (${mySubmissions.length})` },
-          { key: "subjects", label: `🎓 My Enrolled Subjects (${enrolledSubjects.length})` }
-        ].map((tab) => (
+      <div
+        id="student-main-content"
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "10px",
+          borderBottom: "1px solid #e2e8f0",
+          margin: "24px 0 20px"
+        }}
+      >
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+          {[
+            { key: "assignments", label: `📝 Course Assignments (${courseAssignments.length})` },
+            { key: "materials", label: `📚 Faculty Learning Materials (${facultyMaterials.length})` },
+            { key: "submissions", label: `✅ My Submissions (${mySubmissions.length})` },
+            { key: "subjects", label: `🎓 My Enrolled Subjects (${enrolledSubjects.length})` }
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveSection(tab.key)}
+              style={{
+                padding: "10px 18px",
+                background: "none",
+                border: "none",
+                borderBottom: activeSection === tab.key ? "2.5px solid #2563eb" : "2.5px solid transparent",
+                color: activeSection === tab.key ? "#2563eb" : "#64748b",
+                fontWeight: activeSection === tab.key ? "700" : "500",
+                fontSize: "0.92rem",
+                cursor: "pointer"
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {activeSection !== "subjects" && (
           <button
-            key={tab.key}
             type="button"
-            onClick={() => setActiveSection(tab.key)}
-            style={{
-              padding: "10px 18px",
-              background: "none",
-              border: "none",
-              borderBottom: activeSection === tab.key ? "2.5px solid #2563eb" : "2.5px solid transparent",
-              color: activeSection === tab.key ? "#2563eb" : "#64748b",
-              fontWeight: activeSection === tab.key ? "700" : "500",
-              fontSize: "0.92rem",
-              cursor: "pointer"
-            }}
+            onClick={() => navigateToSection("subjects")}
+            className="btn btn-secondary btn-sm"
+            style={{ marginBottom: "6px" }}
           >
-            {tab.label}
+            <GraduationCap size={14} color="#2563eb" />
+            <span>+ Enroll in New Subject</span>
           </button>
-        ))}
+        )}
       </div>
 
       {/* SECTION A: Course Assignments */}
@@ -494,9 +537,20 @@ export default function StudentDashboard({
               })}
             </div>
           ) : (
-            <div className="empty-sub-card">
-              <FileText size={32} className="empty-icon" />
-              <p>No active assignments in your enrolled courses yet.</p>
+            <div className="empty-sub-card" style={{ padding: "36px 20px", textAlign: "center" }}>
+              <FileText size={36} className="empty-icon" style={{ margin: "0 auto 10px", color: "#94a3b8" }} />
+              <h4 style={{ margin: "0 0 6px", color: "#1e293b", fontSize: "16px" }}>No Active Course Assignments</h4>
+              <p style={{ margin: "0 0 16px", color: "#64748b", fontSize: "13.5px" }}>
+                There are no published assignments in your enrolled courses yet, or you may need to enroll in other courses.
+              </p>
+              <button
+                type="button"
+                onClick={() => navigateToSection("subjects")}
+                className="btn btn-primary btn-sm"
+              >
+                <GraduationCap size={15} />
+                <span>Browse Course Catalog & Enroll</span>
+              </button>
             </div>
           )}
         </div>
@@ -528,9 +582,20 @@ export default function StudentDashboard({
               ))}
             </div>
           ) : (
-            <div className="empty-sub-card">
-              <BookOpen size={32} className="empty-icon" />
-              <p>No faculty learning materials uploaded for your enrolled subjects yet.</p>
+            <div className="empty-sub-card" style={{ padding: "36px 20px", textAlign: "center" }}>
+              <BookOpen size={36} className="empty-icon" style={{ margin: "0 auto 10px", color: "#94a3b8" }} />
+              <h4 style={{ margin: "0 0 6px", color: "#1e293b", fontSize: "16px" }}>No Faculty Learning Materials</h4>
+              <p style={{ margin: "0 0 16px", color: "#64748b", fontSize: "13.5px" }}>
+                Instructors haven't uploaded learning materials for your enrolled courses yet, or you may need to enroll in other courses.
+              </p>
+              <button
+                type="button"
+                onClick={() => navigateToSection("subjects")}
+                className="btn btn-primary btn-sm"
+              >
+                <GraduationCap size={15} />
+                <span>Browse Course Catalog & Enroll</span>
+              </button>
             </div>
           )}
         </div>
@@ -634,6 +699,13 @@ export default function StudentDashboard({
       {/* SECTION D: My Enrolled Subjects & Course Catalog */}
       {activeSection === "subjects" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {enrollMessage && (
+            <div className={`auth-alert ${enrollMessage.type}`} style={{ padding: "12px 16px", fontSize: "14px" }}>
+              {enrollMessage.type === "success" ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
+              <span>{enrollMessage.text}</span>
+            </div>
+          )}
+
           {/* Enrolled Subjects */}
           <div>
             <h3 style={{ margin: "0 0 14px", fontSize: "1.1rem", color: "#1e293b" }}>My Enrolled Courses</h3>
