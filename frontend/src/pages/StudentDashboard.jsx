@@ -17,7 +17,8 @@ import {
   Calendar,
   Award,
   Layers,
-  FolderOpen
+  FolderOpen,
+  Trash2
 } from "lucide-react";
 import StatsCard from "../components/StatsCard";
 import DocumentCard from "../components/DocumentCard";
@@ -236,6 +237,27 @@ export default function StudentDashboard({
         el.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     }, 60);
+  };
+
+  const handleRetractSubmission = async (submissionId, assignmentTitle) => {
+    if (!window.confirm(`Are you sure you want to retract and delete your submission for "${assignmentTitle || 'this assignment'}"? You will be able to submit a fresh document.`)) {
+      return;
+    }
+    try {
+      const res = await fetch(
+        `${API_BASE}/submissions/${submissionId}?user_email=${encodeURIComponent(studentEmail)}&user_name=${encodeURIComponent(studentName)}&user_role=Student`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.detail || "Failed to retract submission.");
+      }
+      setMySubmissions((prev) => prev.filter((s) => s.id !== submissionId));
+      fetchStudentData();
+      alert("Submission retracted successfully! You can now submit a new document.");
+    } catch (err) {
+      alert("Error retracting submission: " + err.message);
+    }
   };
 
   return (
@@ -496,41 +518,43 @@ export default function StudentDashboard({
                         </span>
                       )}
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (submission) {
-                            setSignatureModalSubmission(submission);
-                          } else {
-                            setSubmissionModalAssignment(assign);
-                          }
-                        }}
-                        style={{
-                          padding: "6px 14px",
-                          borderRadius: "6px",
-                          fontSize: "0.8rem",
-                          fontWeight: "600",
-                          border: "none",
-                          cursor: "pointer",
-                          background: submission ? "#f1f5f9" : "#2563eb",
-                          color: submission ? "#1e293b" : "#ffffff",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "5px"
-                        }}
-                      >
-                        {submission ? (
-                          <>
-                            <ShieldCheck size={14} color="#059669" />
-                            <span>View Receipt</span>
-                          </>
-                        ) : (
-                          <>
-                            <UploadCloud size={14} />
-                            <span>Submit & Sign</span>
-                          </>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        {submission && (
+                          <button
+                            type="button"
+                            onClick={() => handleRetractSubmission(submission.id, assign.title)}
+                            className="btn btn-secondary btn-sm"
+                            style={{ color: "#ef4444", borderColor: "#fca5a5" }}
+                            title="Retract and delete this submission"
+                          >
+                            <Trash2 size={13} />
+                            <span>Retract</span>
+                          </button>
                         )}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (submission) {
+                              setSignatureModalSubmission(submission);
+                            } else {
+                              setSubmissionModalAssignment(assign);
+                            }
+                          }}
+                          className={`btn ${submission ? "btn-secondary" : "btn-primary"} btn-sm`}
+                        >
+                          {submission ? (
+                            <>
+                              <ShieldCheck size={14} color="#059669" />
+                              <span>View Receipt</span>
+                            </>
+                          ) : (
+                            <>
+                              <UploadCloud size={14} />
+                              <span>Submit & Sign</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -683,6 +707,17 @@ export default function StudentDashboard({
                       <Download size={14} />
                       <span>PDF</span>
                     </a>
+
+                    <button
+                      type="button"
+                      onClick={() => handleRetractSubmission(sub.id, sub.assignment_title)}
+                      className="btn btn-secondary"
+                      style={{ fontSize: "0.8rem", padding: "5px 10px", display: "flex", alignItems: "center", gap: "4px", color: "#ef4444", borderColor: "#fca5a5" }}
+                      title="Retract / Delete this submission"
+                    >
+                      <Trash2 size={14} />
+                      <span>Retract</span>
+                    </button>
                   </div>
                 </div>
               ))}

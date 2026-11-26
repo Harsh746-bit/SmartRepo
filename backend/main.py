@@ -1273,7 +1273,8 @@ async def upload_document(
                 "is_deleted": {"$ne": True}
             }) or db.submissions.find_one({
                 "subject_id": sub_id_str,
-                "sha256_hash": file_hash
+                "sha256_hash": file_hash,
+                "is_deleted": {"$ne": True}
             })
             if duplicate_in_subject:
                 existing_fn = duplicate_in_subject.get("original_filename", "existing document")
@@ -1800,6 +1801,18 @@ def move_document_to_recycle_bin(
             }
         }
     )
+    # Also sync soft-delete to submissions if this document represents an assignment submission
+    db.submissions.update_one(
+        {"_id": doc["_id"]},
+        {
+            "$set": {
+                "is_deleted": True,
+                "deleted_at": now_iso,
+                "deleted_by_email": clean_email,
+                "deleted_by_name": clean_name
+            }
+        }
+    )
 
     log_activity(
         action="DELETE",
@@ -1891,6 +1904,18 @@ def restore_document_from_recycle_bin(
             }
         }
     )
+    # Also restore matching submission if applicable
+    db.submissions.update_one(
+        {"_id": doc["_id"]},
+        {
+            "$set": {
+                "is_deleted": False,
+                "deleted_at": None,
+                "deleted_by_email": None,
+                "deleted_by_name": None
+            }
+        }
+    )
 
     clean_email = (user_email or "user@smartrepo.edu").strip().lower()
     clean_name = (user_name or "User").strip()
@@ -1960,6 +1985,7 @@ def permanently_delete_document(
 
     # Remove document record and related favorites/views from MongoDB
     db.documents.delete_one({"_id": doc["_id"]})
+    db.submissions.delete_one({"_id": doc["_id"]})
     db.favorites.delete_many({"document_id": str(doc["_id"])})
     db.recently_viewed.delete_many({"document_id": str(doc["_id"])})
 
@@ -3261,13 +3287,23 @@ def get_assignment_submissions(
     assign_id_str = str(assign["_id"])
 
     if clean_role == "Student":
-        cursor = db.submissions.find({"assignment_id": assign_id_str, "student_email": clean_email}).sort("submitted_at", -1)
+        cursor = db.submissions.find({
+            "assignment_id": assign_id_str,
+            "student_email": clean_email,
+            "is_deleted": {"$ne": True}
+        }).sort("submitted_at", -1)
     elif clean_role == "Teacher":
         if assign.get("teacher_email", "").lower() != clean_email:
             raise HTTPException(status_code=403, detail="You do not own this assignment.")
-        cursor = db.submissions.find({"assignment_id": assign_id_str}).sort("submitted_at", -1)
+        cursor = db.submissions.find({
+            "assignment_id": assign_id_str,
+            "is_deleted": {"$ne": True}
+        }).sort("submitted_at", -1)
     else:  # Admin
-        cursor = db.submissions.find({"assignment_id": assign_id_str}).sort("submitted_at", -1)
+        cursor = db.submissions.find({
+            "assignment_id": assign_id_str,
+            "is_deleted": {"$ne": True}
+        }).sort("submitted_at", -1)
 
     return [serialize_submission(s) for s in cursor]
 
@@ -3444,10 +3480,12 @@ async def submit_assignment(
     async with upload_lock:
         existing_dup = db.submissions.find_one({
             "assignment_id": assign_id_str,
-            "sha256_hash": sha256_hash
+            "sha256_hash": sha256_hash,
+            "is_deleted": {"$ne": True}
         }) or db.submissions.find_one({
             "subject_id": sub_id_str,
-            "sha256_hash": sha256_hash
+            "sha256_hash": sha256_hash,
+            "is_deleted": {"$ne": True}
         }) or db.documents.find_one({
             "subject_id": sub_id_str,
             "sha256_hash": sha256_hash,
@@ -3634,6 +3672,73 @@ def get_submission_by_id(
         raise HTTPException(status_code=403, detail="Access denied. You can only view your own submissions.")
 
     return serialize_submission(sub)
+
+
+@app.delete("/submissions/{submission_id}")
+def delete_submission(
+    submission_id: str,
+    user_email: Optional[str] = Query(None),
+    user_name: Optional[str] = Query(None),
+    user_role: Optional[str] = Query(None)
+):
+    """
+    Deletes or retracts an assignment submission:
+    - Student: Can retract their own submission.
+    - Teacher: Can delete submission within their owned subject.
+    - Admin: Full permissions.
+    """
+    db = mongo.get_mongo_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection unavailable.")
+
+    clean_email = (user_email or "").strip().lower()
+    clean_role = (user_role or "").strip().capitalize()
+
+    try:
+        sub_doc = db.submissions.find_one({"_id": ObjectId(submission_id)})
+    except Exception:
+        sub_doc = None
+
+    if not sub_doc:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    sub_student_email = (sub_doc.get("student_email") or "").strip().lower()
+
+    if clean_role == "Student" and sub_student_email != clean_email:
+        raise HTTPException(status_code=403, detail="Unauthorized: Students can only retract their own submissions.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    db.submissions.update_one(
+        {"_id": sub_doc["_id"]},
+        {"$set": {
+            "is_deleted": True,
+            "deleted_at": now_iso,
+            "deleted_by_email": clean_email
+        }}
+    )
+
+    db.documents.update_one(
+        {"_id": sub_doc["_id"]},
+        {"$set": {
+            "is_deleted": True,
+            "deleted_at": now_iso,
+            "deleted_by_email": clean_email
+        }}
+    )
+
+    log_activity(
+        action="SUBMISSION_DELETED",
+        user_email=clean_email,
+        user_name=user_name or "Student",
+        user_role=clean_role,
+        details=f"Retracted assignment submission '{sub_doc.get('original_filename')}' for assignment '{sub_doc.get('assignment_title')}'."
+    )
+
+    return {
+        "message": f"Submission '{sub_doc.get('original_filename')}' retracted successfully.",
+        "id": submission_id
+    }
 
 
 @app.get("/submissions/{submission_id}/download")
@@ -4080,7 +4185,7 @@ def get_verification_dashboard(
     clean_email = (user_email or "").strip().lower()
     clean_role = (user_role or "").strip().capitalize()
 
-    query = {}
+    query = {"is_deleted": {"$ne": True}}
     if clean_role == "Student":
         query["student_email"] = clean_email
     elif clean_role == "Teacher":
